@@ -129,10 +129,12 @@ function createSideChatService(services, config) {
     openSignals.set(mainSessionId, (openSignals.get(mainSessionId) || 0) + 1)
     bumpVersion()
     // 创建即归档：从会话列表/搜索中隐藏（归档只是列表记账，不影响 agent 生命周期）
-    try {
-      await workspaceRegistry.archiveSession(sideId)
-    } catch (err) {
-      console.error('[side-chat] 归档失败（该会话将出现在会话列表中）', err)
+    if (workspaceRegistry) {
+      try {
+        await workspaceRegistry.archiveSession(sideId)
+      } catch (err) {
+        console.error('[side-chat] 归档失败（该会话将出现在会话列表中）', err)
+      }
     }
     if (firstMessage) {
       const res = await send(mainSessionId, sideId, firstMessage)
@@ -278,10 +280,12 @@ function createSideChatService(services, config) {
     } catch (err) {
       console.error('[side-chat] dispose 失败', err)
     }
-    try {
-      await workspaceRegistry.archiveSession(entry.sessionId)
-    } catch (err) {
-      console.error('[side-chat] 归档失败', err)
+    if (workspaceRegistry) {
+      try {
+        await workspaceRegistry.archiveSession(entry.sessionId)
+      } catch (err) {
+        console.error('[side-chat] 归档失败', err)
+      }
     }
     bumpVersion()
     return { ok: true }
@@ -329,7 +333,9 @@ return {
       workspaceRegistry: ctx.get('workspaceRegistry'),
       agentPresets: ctx.get('agentPresets'),
     }
-    const required = ['agents', 'sessions', 'sessionQuery', 'commands', 'workspaceRegistry']
+    const required = ['agents', 'sessions', 'sessionQuery', 'commands']
+    // workspaceRegistry（dsh-workspace）在 web profile 的 host 平面通常存在；
+    // 个别组合缺失时降级运行：跳过归档（侧会话会出现在会话列表），插件仍激活。
     for (const name of required) {
       if (!services[name]) {
         console.error('[side-chat] 缺少必需服务：' + name + '，插件未启用')

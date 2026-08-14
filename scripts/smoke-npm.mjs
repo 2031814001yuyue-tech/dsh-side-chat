@@ -161,6 +161,32 @@ async function callRoute(path, rawBody) {
   for (const dispose of effects) dispose()
   ok(routes.length === 0 && before === 6, 'fiber 回收后路由全部移除')
 }
+{
+  // 回归：个别组合缺少 workspaceRegistry 时，插件仍激活（降级：跳过归档）
+  const routes2 = []
+  const ctx2 = {
+    get(name) {
+      if (name === 'webServer') return { register(route) { routes2.push(route); return () => {} } }
+      if (name === 'workspaceRegistry') return undefined
+      return services[name]
+    },
+    on() {
+      return () => {}
+    },
+    effect(fn) {
+      fn()
+      return () => {}
+    },
+  }
+  let threw = false
+  try {
+    sideChatHost(ctx2)
+  } catch (err) {
+    threw = true
+  }
+  ok(!threw, '缺 workspaceRegistry 时 apply 不抛异常')
+  ok(routes2.length === 6, '缺 workspaceRegistry 时仍注册 6 条路由', '实际 ' + routes2.length)
+}
 
 // ---------------------------------------------------------------------------
 // 2. Client bundle
