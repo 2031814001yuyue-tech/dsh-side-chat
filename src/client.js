@@ -129,6 +129,20 @@ function createPanelStore() {
 }
 
 /**
+ * timer 服务缺失时的回退实现：npm 静态安装路径没有 client 端 timer 服务
+ * （cordis-plugin-timer 无 client 半体），动态插件路径有该服务、不会走到这里。
+ * 返回的 interval 与 cordis timer 同形：注册回调、返回取消函数。
+ */
+function createTimerFallback() {
+  return {
+    interval(callback, ms) {
+      const id = setInterval(callback, ms)
+      return () => clearInterval(id)
+    },
+  }
+}
+
+/**
  * 轻量 Markdown 渲染器（纯 React 元素，无 innerHTML，防 XSS）。
  * 链接仅允许 http/https/mailto 协议（B1 修复），其余降级为原文。
  * @param {object} React
@@ -243,7 +257,8 @@ return {
   apply(ctx) {
     const store = createPanelStore()
     const markdown = createMarkdownRenderer(React)
-    const timer = ctx.get('timer')
+    // 动态路径有 cordis timer 服务；npm 静态路径没有，回退到 setInterval 实现
+    const timer = ctx.get('timer') || createTimerFallback()
     const slots = ctx.get('slots')
     if (!slots) return
     styles.insert(PANEL_CSS)

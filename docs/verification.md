@@ -52,3 +52,24 @@
 | 14 | 面板隐藏带回主对话的总结请求消息（`side-sum-*`），只显示摘要回复 | pkg-12 |
 
 - 数据保留语义：侧对话数据持久化在磁盘（`~/.dsh/sessions/.../side-xxx/`），关闭/重启不删除，但归档后界面不可见；面板注册表为内存态。
+
+## 台阶二：npm 打包验证（2026-08-14）
+
+**静态验证（Node 仿真，`node scripts/smoke-npm.mjs`，26 项全部通过）：**
+
+- Host 适配器 `lib/index.js`：导出插件工厂 + `inject: ['webServer']`；apply 后注册 6 条 exact 路由（`/sidechat-api/sidechat/{open,send,state,events,bring-back,close}`），全部挂在 `ctx.effect`；假 req/res 调用路由处理器验证：`state → {chats[], version, openSignal}`（与动态路径同构）、业务错误 `{ok:false, error}`、参数校验、非法 JSON 请求体 → 500 `{ok:false, error}`；fiber 回收后 6 条路由全部移除。
+- Client bundle `lib/client.js`：`__ModuleLoader__.load({id: 'dsh-side-chat', factory})` 注册；factory 仅 `require('react')`；`exports.apply`/`exports.inject`（`@deepseek-ai/dsh-client-runtime`）；懒加载语义（工厂阶段不注入样式）；apply 冒烟（stub slots、无 timer）注册两个 slot 且注入 PANEL_CSS 样式（`data-plugin` 标记）；host shim 指向 `/sidechat-api/` 前缀。
+- 语法检查 `node scripts/check.cjs`：src/host.js、src/client.js OK（动态路径不受影响）。
+
+**契约依据（从 DSH 0.1.0-rc.6 运行时实读）：**
+
+- client-modules 扫描 loader 条目（`entry.options.name` + fiber 存活）→ `dsh.client.platform === 'web'` → `exports["./client"]` 指向产物 → sha1 rev → `/plugins/<name>/client.js` → `window.__DSH_BOOT__` 注入。
+- 官方 bundle 格式：`window.__ModuleLoader__.load({id, factory(require)})`，返回 `{apply, inject}`；loader 解析 seed word `react`（官方 bundle 同款）。
+- `webServer.register({kind:'exact', path, handler(req,res)})` 返回 disposer，重复路径抛错。
+- 静态 client 内核无 `timer` 服务（cordis-plugin-timer 无 client 半体）→ src/client.js 增加 `createTimerFallback()`（动态路径有 timer，不受影响）。
+
+**待真机验证（需重启 DSH，本会话无法自证）：**
+
+1. `cd $DSH_HOME/profiles && npm install dsh-side-chat`（发布后）
+2. `profiles/web/cordis.patch.yml` 加 `- insert: [{id: side-chat, name: dsh-side-chat}]`
+3. 重启 DSH → 会话标题栏出现 ⤳ 入口 → 新建/发送/带回/关闭全流程

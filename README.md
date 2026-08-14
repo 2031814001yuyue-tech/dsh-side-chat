@@ -2,7 +2,7 @@
 
 DSH 侧边对话插件 —— **并行侧边对话**：在主对话之外开一条**真实并行 agent 会话**（独立上下文、共享工作区），结束后把结论**摘要带回主对话**，主对话上下文不被污染。
 
-> 免构建、纯 JavaScript、MIT 许可。一份源码既是本仓库内容，也是 DSH 动态 Cordis 插件的 Host/Client 半体。
+> 纯 JavaScript、MIT 许可。一份源码两种加载方式：既可作为 DSH 动态 Cordis 插件即时加载（免构建），也可作为 npm 包正式安装（跨重启持久）。
 
 ## 特性
 
@@ -32,7 +32,9 @@ DSH 侧边对话插件 —— **并行侧边对话**：在主对话之外开一�
 
 ## 安装
 
-本插件通过 **DSH 动态 Cordis 插件**流程加载（免构建、免 npm 依赖）：
+### 方式一：动态 Cordis 插件（开发调试，即改即生效）
+
+通过 **DSH 动态 Cordis 插件**流程加载（免构建、免 npm 依赖）：
 
 1. 在 DSH Web 会话中打开动态插件定义界面（cordis 插件工具）。
 2. 新建插件：
@@ -40,9 +42,30 @@ DSH 侧边对话插件 —— **并行侧边对话**：在主对话之外开一�
    - **Client 半体**：粘贴 [`src/client.js`](src/client.js) 的完整内容。
    - idPrefix 建议 `side`，名称 `DSH Side Chat`。
 3. 运行该插件，在浏览器中批准 Client 半体授权。
-4. 刷新页面：侧边栏底部出现「⤳ 侧边对话」入口。
+4. 刷新页面：会话标题栏右侧出现「⤳」入口。
 
-> 动态插件是进程内、临时性的：DSH 重启后需重新加载。将插件固化为 loader 行 / npm 包（正式安装）列入 v2 路线。
+### 方式二：npm 包安装（正式，跨重启持久）
+
+1. 在 DSH **profiles 目录**安装包（与 web/headless profile 共享的 node_modules）：
+
+   ```bash
+   cd "$DSH_HOME/profiles"        # 例如 C:\Users\Lenovo\.dsh\profiles
+   npm install dsh-side-chat
+   ```
+
+2. 在目标 profile 的 `cordis.patch.yml`（如 `profiles/web/cordis.patch.yml`）加一行：
+
+   ```yaml
+   - insert:
+       - id: side-chat
+         name: dsh-side-chat
+   ```
+
+3. 重启 DSH 即生效。
+
+机制：包内 `dsh.client` 元数据声明了浏览器半体，DSH 的 client-modules 自动将其编入启动清单（`window.__DSH_BOOT__`）并从 `/plugins/dsh-side-chat/client.js` 加载；Host 半体把 RPC 桥接为 `/sidechat-api/*` HTTP 路由。npm 路径与动态路径共用同一份 `src/` 源码，行为一致；`lib/` 为构建产物（`npm run build` 生成，`npm run check` / `npm run smoke` 做语法与适配器冒烟验证）。
+
+> 动态方式零依赖、即改即生效，适合开发调试；npm 方式跨重启持久、可分发，适合日常使用。两者可以共存。
 
 ## 使用
 
@@ -69,7 +92,7 @@ DSH 侧边对话插件 —— **并行侧边对话**：在主对话之外开一�
 | 关闭 | `handle.dispose()` + `workspaceRegistry.archiveSession` |
 | 列表隐藏 | 创建即 `archiveSession`（归档只是列表记账，不影响 agent 生命周期） |
 | 命令 | `commands.register` 注册 `/side` |
-| RPC | `harness.handle`：`sidechat/open`、`send`、`state`、`events`、`bring-back`、`close` |
+| RPC | 动态路径 `harness.handle`；npm 路径桥接为 `webServer` 路由 `/sidechat-api/sidechat/{open,send,state,events,bring-back,close}` |
 
 **Client 半体**（`src/client.js`，浏览器）
 
@@ -80,7 +103,7 @@ DSH 侧边对话插件 —— **并行侧边对话**：在主对话之外开一�
 | 数据刷新 | 面板打开时 1s 轮询 `sidechat/state` + `sidechat/events` |
 | 消息渲染 | 轻量 Markdown 渲染（React 元素，防 XSS）+ 角色标签 + 时间戳 + 智能自动滚动 |
 | 自动开面板 | 监听 `openSignal`（`/side` 命令触发） |
-| 样式 | `styles.insert` + `--dsw-alias-*` 主题变量（明暗自适应，尊重 reduced-motion） |
+| 样式 | `styles.insert`（npm 路径为 DOM `<style>` shim）+ `--dsw-alias-*` 主题变量（明暗自适应，尊重 reduced-motion） |
 
 **数据流**
 
