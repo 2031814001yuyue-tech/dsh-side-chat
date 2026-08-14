@@ -139,6 +139,24 @@ async function callRoute(path, rawBody) {
   ok(r.status === 500 && r.json.ok === false && /JSON/.test(r.json.error), '非法 JSON 请求体 → 500 业务错误', JSON.stringify(r))
 }
 {
+  // 回归 B6：openSignal 按主会话隔离——换会话不误触发自动打开
+  const fakeAgent = {
+    session: { header: { cwd: 'D:\\', agentPreset: 'standard' } },
+    options: { provider: 'p', model: 'm', maxTokens: 1 },
+    ctx: {},
+  }
+  const realGet = services.agents.get
+  services.agents.get = () => fakeAgent
+  services.agents.create = async () => ({ dispose: async () => {} })
+  const openRes = await callRoute('/sidechat-api/sidechat/open', Buffer.from(JSON.stringify({ mainSessionId: 'm1' })))
+  const st1 = await callRoute('/sidechat-api/sidechat/state', Buffer.from(JSON.stringify({ mainSessionId: 'm1' })))
+  const st2 = await callRoute('/sidechat-api/sidechat/state', Buffer.from(JSON.stringify({ mainSessionId: 'm2' })))
+  ok(openRes.json.ok === true, '回归前置：open(m1) 成功', JSON.stringify(openRes.json))
+  ok(st1.json.openSignal === 1, 'state(m1).openSignal = 1', JSON.stringify(st1.json))
+  ok(st2.json.openSignal === 0, 'state(m2).openSignal = 0（换会话不误触发）', JSON.stringify(st2.json))
+  services.agents.get = realGet
+}
+{
   const before = routes.length
   for (const dispose of effects) dispose()
   ok(routes.length === 0 && before === 6, 'fiber 回收后路由全部移除')

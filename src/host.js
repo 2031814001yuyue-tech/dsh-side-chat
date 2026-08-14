@@ -27,7 +27,9 @@ function createSideChatService(services, config) {
   const sideChats = new Map()
   let counter = 0
   let version = 0
-  let openSignal = 0
+  /** 每主会话的 openSignal（open() 时递增，state() 按主会话返回）：
+   *  全局计数会让「换会话」误触发自动打开（新挂载的 ⤳ 按钮基线为 0）。 */
+  const openSignals = new Map()
 
   function bumpVersion() {
     version += 1
@@ -124,7 +126,7 @@ function createSideChatService(services, config) {
       lastPreview: '',
     }
     sideChats.set(sideId, entry)
-    openSignal += 1
+    openSignals.set(mainSessionId, (openSignals.get(mainSessionId) || 0) + 1)
     bumpVersion()
     // 创建即归档：从会话列表/搜索中隐藏（归档只是列表记账，不影响 agent 生命周期）
     try {
@@ -172,7 +174,7 @@ function createSideChatService(services, config) {
       })
     }
     chats.sort((a, b) => a.updatedAt - b.updatedAt)
-    return { chats, version, openSignal }
+    return { chats, version, openSignal: openSignals.get(mainSessionId) || 0 }
   }
 
   /** 面板消息流：只保留真实用户输入与助手回复，过滤系统注入与总结请求。 */

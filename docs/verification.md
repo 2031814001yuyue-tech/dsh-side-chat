@@ -51,6 +51,20 @@
 | 13 | 面板最小化：缩为右下角胶囊（对话后台继续运行，显示运行中数量），点击恢复 | pkg-11 |
 | 14 | 面板隐藏带回主对话的总结请求消息（`side-sum-*`），只显示摘要回复 | pkg-12 |
 
+## 第三轮：B6 修复（2026-08-14）
+
+**问题**：插件运行后，每切换一个会话，侧边面板就自动打开。
+
+**根因**：Host 的 `openSignal` 是**全局计数器**（任一主会话 open 都会递增），而 Client 的 ⤳ 按钮用组件内 `useRef(0)` 做比较基线。切换会话时按钮组件重新挂载、基线归零，下一次轮询读到全局 `openSignal > 0` 就误判"有新侧对话"，自动打开面板。
+
+**修复**（src/host.js + src/client.js，动态插件 pkg-16 / npm 路径同步）：
+
+- Host：`openSignal` 改为 `Map<mainSessionId, number>`（`openSignals`），`open()` 只递增本主会话计数，`state()` 按主会话返回。
+- Client：`lastOpenSignals` 改为模块级 `Map`（跨组件重挂载保持）；首次挂载只记录基线、不弹面板；此后只在信号**增长**时 `store.setOpen(true)`。
+- 效果：换会话/刷新页面不再弹面板；`/side` 命令或「＋ 新建」仍会（且只会）在当前主会话自动打开面板。
+
+**验证**：`scripts/smoke-npm.mjs` 新增回归用例——`open(m1)` 后 `state(m1).openSignal === 1`、`state(m2).openSignal === 0`；29 项全部通过。
+
 - 数据保留语义：侧对话数据持久化在磁盘（`~/.dsh/sessions/.../side-xxx/`），关闭/重启不删除，但归档后界面不可见；面板注册表为内存态。
 
 ## 台阶二：npm 打包验证（2026-08-14）

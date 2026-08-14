@@ -93,6 +93,13 @@ const PANEL_CSS = `
 }
 `
 
+/**
+ * 每主会话已见过的 openSignal（模块级，跨 ⤳ 按钮组件重挂载保持）：
+ * 只响应「信号增长」自动开面板；换会话/刷新页面首次挂载只记基线、不弹面板。
+ * （配合 Host 按主会话计数，修复「换一个对话面板就自动打开」B6）
+ */
+const lastOpenSignals = new Map()
+
 /** 面板开关/最小化状态 store（发布订阅），供 toggle 按钮与面板共享。 */
 function createPanelStore() {
   let open = false
@@ -278,16 +285,23 @@ return {
     function SideToggle(props) {
       const { isOpen, isMinimized } = usePanelState()
       const sessionId = props.sessionId
-      const lastOpenSignal = React.useRef(0)
       React.useEffect(() => {
         if (!timer) return undefined
         return timer.interval(async () => {
           if (!sessionId) return
           try {
             const res = await host.call('sidechat/state', { mainSessionId: sessionId })
-            if (res && typeof res.openSignal === 'number' && res.openSignal > lastOpenSignal.current) {
-              lastOpenSignal.current = res.openSignal
-              store.setOpen(true)
+            if (res && typeof res.openSignal === 'number') {
+              const prev = lastOpenSignals.get(sessionId)
+              if (prev === undefined) {
+                // 首次挂载：记录基线，不自动打开（换会话/刷新页面不弹面板）
+                lastOpenSignals.set(sessionId, res.openSignal)
+                return
+              }
+              if (res.openSignal > prev) {
+                lastOpenSignals.set(sessionId, res.openSignal)
+                store.setOpen(true)
+              }
             }
           } catch (err) {
             console.error('[side-chat] openSignal 监听失败', err)
