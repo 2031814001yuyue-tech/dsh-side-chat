@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.1] - 2026-08-14
+
+- 修复 Client bundle 的 `exports.inject`：`@deepseek-ai/dsh-client-runtime`（包名）→ `slots`（服务名）。client 内核按服务名等待 fiber 依赖，包名导致 `pending (waiting for service)` 启动失败。
+- Host 半体加固：`workspaceRegistry` 从必需服务改为可选（缺失时降级跳过归档，插件仍激活）。
+
 ## [0.1.0] - 2026-08-14
 
 - 初版：`/side` 命令 + 侧边面板；真实并行 agent 会话（继承主会话组合，工具集一致）。

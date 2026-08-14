@@ -1,6 +1,6 @@
 {
   "name": "dsh-side-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH Side Chat — 并行侧边对话插件：真实并行 agent 会话、独立上下文、摘要带回主对话。",
   "license": "MIT",
   "main": "lib/index.js",

@@ -123,7 +123,10 @@ window.__ModuleLoader__.load({
 
     const React = require('react')
 
-    const INJECT = ['@deepseek-ai/dsh-client-runtime']
+    // 注意：这里的 inject 必须是「服务名」而非包名——client 内核的 fiber 按
+    // exports.inject 在根 ctx 上等待服务（官方 bundle 同款，如 sidebar 注入
+    // slots/layout/sessions）。我们只用 slots（timer 缺失有 setInterval 回退）。
+    const INJECT = ['slots']
 
     // host shim：动态 runner 的 host builtin 在静态路径不存在，
     // 改走 Host 半体注册的 webServer 路由（见 lib/index.js）。

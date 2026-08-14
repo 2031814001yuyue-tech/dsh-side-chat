@@ -237,8 +237,8 @@ const pluginExports = handoff.factory((spec) => {
 })
 
 ok(typeof pluginExports.apply === 'function', 'exports.apply 为函数')
-ok(Array.isArray(pluginExports.inject) && pluginExports.inject.includes('@deepseek-ai/dsh-client-runtime'),
-  'exports.inject 声明 runtime 依赖', JSON.stringify(pluginExports.inject))
+ok(Array.isArray(pluginExports.inject) && pluginExports.inject.includes('slots'),
+  'exports.inject 声明服务名 slots（fiber 等待机制）', JSON.stringify(pluginExports.inject))
 ok(styleTags.length === 0, '工厂阶段不注入样式（懒加载语义）')
 
 // apply 冒烟：stub slots + 无 timer（静态路径真实情况）
