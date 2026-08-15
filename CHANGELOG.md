@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.2] - 2026-08-14
+
+- bundle 方式安装：包内自带 `cordis.patch.yml` + `dsh.bundle.patch` 元数据，把 `dsh-side-chat` 加进 profile 的 `dsh.profile.bundles` 即自动加载（与 dsh-vision 同款机制），不再依赖手动编辑 profile 的 `cordis.patch.yml`（该文件可能被外部启动脚本清理）。
+
 ## [0.1.1] - 2026-08-14
 
 - 修复 Client bundle 的 `exports.inject`：`@deepseek-ai/dsh-client-runtime`（包名）→ `slots`（服务名）。client 内核按服务名等待 fiber 依赖，包名导致 `pending (waiting for service)` 启动失败。

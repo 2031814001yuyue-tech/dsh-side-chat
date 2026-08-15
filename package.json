@@ -1,15 +1,19 @@
 {
   "name": "dsh-side-chat",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH Side Chat — 并行侧边对话插件：真实并行 agent 会话、独立上下文、摘要带回主对话。",
   "license": "MIT",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
@@ -21,6 +25,7 @@
     "lib",
     "src",
     "scripts",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

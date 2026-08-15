@@ -53,13 +53,17 @@ DSH 侧边对话插件 —— **并行侧边对话**：在主对话之外开一�
    npm install dsh-side-chat
    ```
 
-2. 在目标 profile 的 `cordis.patch.yml`（如 `profiles/web/cordis.patch.yml`）加一行：
+2. 把包注册为 **bundle**（与官方 client 插件、dsh-vision 同款机制）：在目标 profile 的 `package.json`（如 `profiles/web/package.json`）的 `dsh.profile.bundles` 里加一项：
 
-   ```yaml
-   - insert:
-       - id: side-chat
-         name: dsh-side-chat
+   ```json
+   "dsh": {
+     "profile": {
+       "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-side-chat"]
+     }
+   }
    ```
+
+   包内自带的 `cordis.patch.yml` 会在启动时自动插入加载行——**不要**再往 profile 的 `cordis.patch.yml` 里手动加行，否则重复注册会崩溃。
 
 3. 重启 DSH 即生效。
 
