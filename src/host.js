@@ -201,21 +201,28 @@ function createSideChatService(services, config) {
     for (let i = end; i >= 0; i -= 1) {
       const event = events[i]
       if (!event) continue
+      let role
+      let text
       if (event.type === 'user/message') {
         const source = event.data && event.data.source
         if (!source || source.kind !== 'user') continue
-        const text = textOf(event.data && event.data.content).trim()
-        if (!text) continue
-        picked.push({ role: '用户', text })
-        chars += text.length
+        text = textOf(event.data && event.data.content).trim()
+        role = '用户'
       } else if (event.type === 'assistant/message') {
-        const text = textOf(event.data && event.data.message && event.data.message.content).trim()
-        if (!text) continue
-        picked.push({ role: '助手', text })
-        chars += text.length
+        text = textOf(event.data && event.data.message && event.data.message.content).trim()
+        role = '助手'
       } else {
         continue
       }
+      if (!text) continue
+      if (recent) {
+        const remaining = INHERIT_RECENT_CHARS - chars
+        if (remaining <= 0) break
+        // 单条消息也受预算约束：先截断再入列，避免一条超长回复把 2 万字上限撑破
+        if (text.length > remaining) text = text.slice(0, remaining) + '…'
+      }
+      picked.push({ role, text })
+      chars += text.length
       if (recent && (chars >= INHERIT_RECENT_CHARS || picked.length >= INHERIT_RECENT_TURNS * 2)) break
     }
     if (!picked.length) return undefined
@@ -273,6 +280,15 @@ function createSideChatService(services, config) {
       })
     }
     const initialSelection = normalizeSelection(selection) || inheritedSelection
+    // 主会话可能完全依赖默认路由（options 里没有 provider/model、model.current() 也拿不到完整选择）：
+    // 这种时候不要写死这两个字段，交给 agents.create 的默认值，避免解构时抛错。
+    const initialRoute = initialSelection === undefined
+      ? {}
+      : {
+          provider: initialSelection.provider,
+          model: initialSelection.model,
+          ...initialSelection.reasoningEffort === undefined ? {} : { reasoningEffort: initialSelection.reasoningEffort },
+        }
     // 继承上下文：把主对话的对话文字抓成一段背景，等 agent 建好后以隐藏注入的方式交给它。
     const inheritMode = normalizeInheritMode(inherit)
     let inherited
@@ -285,10 +301,8 @@ function createSideChatService(services, config) {
         agentPreset: effectivePreset,
       },
       agentOptions: {
-        provider: initialSelection.provider,
-        model: initialSelection.model,
-        maxTokens: mainAgent.options.maxTokens,
-        ...initialSelection.reasoningEffort === undefined ? {} : { reasoningEffort: initialSelection.reasoningEffort },
+        ...initialRoute,
+        ...mainAgent.options.maxTokens === undefined ? {} : { maxTokens: mainAgent.options.maxTokens },
       },
       setup: (agentCtx) => {
         if (!agentPresets) return undefined

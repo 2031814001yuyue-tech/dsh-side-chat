@@ -651,10 +651,12 @@ return {
       for (const group of models) {
         for (const model of group.models) knownModelKeys.add(group.provider + '::' + model.id)
       }
-      // 上下文来源只在「新建」时可选；已建的侧对话模式固定（独立或继承在创建时决定）
-      const inheritPicker = selected ? null : React.createElement('select', {
+      // 上下文来源只影响「下一条新建」，与当前选中的对话无关：所以始终显示，
+      // 否则有对话被自动选中后就再也没有入口改下一次的模式了。
+      const inheritPicker = React.createElement('select', {
         className: 'dsh-sc-select',
-        title: '新建侧对话的上下文：独立 / 继承最近（最近约 20 条对话）/ 继承完整（主对话全部对话文字）——两种继承都不带工具调用',
+        'aria-label': '新建侧对话时使用的上下文',
+        title: '下一条新建侧对话的上下文：独立 / 继承最近（最近约 20 条对话）/ 继承完整（主对话全部对话文字）——两种继承都不带工具调用，也不影响已建对话',
         value: nextInherit,
         onChange: (e) => setNextInherit(e.target.value),
       },
