@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- **右侧栏集成**：面板改为注册为官方右侧栏 tab（`sidebarRightTabs.register` + `sidebar.right.pane.tab` 席位），不再浮在主对话之上；「开始」页新增「侧边对话」入口（`guide`）。右侧栏服务缺失时自动退回原浮层面板。
+- **会话解析修复**：`shell.overlay` 的 standardProps 没有 `sessionId`，改为按 `useSessions` 快照取「主视图」会话（对齐 ui-layout 的做法），修复「＋ 新建」永远提示“请先打开一个会话”、`/side` 不自动开面板的问题。
+- **macOS 适配**：面板改为浮层卡片（右上/下方内缩 12px、圆角、菜单材质 + backdrop-filter、elevation 阴影）；补 `-webkit-app-region:no-drag` 与 `data-window-drag-exclude`，避免点按钮变成拖窗口；输入框 Enter 增加 IME 组词判断。
+- **模型切换**：新增 `sidechat/models`、`sidechat/select-model` RPC 与面板下拉；默认继承主对话模型，切换时写入该侧会话的 `model/selection`（下一轮生效），切换前用 `llm.resolveCallConfig` 校验可用性。
+- **上下文继承**：新增「独立 / 继承最近 / 继承完整」三档。继承只复制主对话中用户与助手的文字（最近 ≤20 条 / ≤2 万字，或全部），不含工具调用与工具输出；主对话无已完成回合时自动退回独立上下文。
+- **修复**：注入消息的来源改用生产者自身 kind（v4 会话格式拒绝 `kind:'plugin'`，此前继承上下文与「带回主对话」注入会报 `format v4 message requires a producer-owned source kind`）。
+- **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 8 条（新增 models / select-model）。
+
 ## [0.1.2] - 2026-08-14
 
 - bundle 方式安装：包内自带 `cordis.patch.yml` + `dsh.bundle.patch` 元数据，把 `dsh-side-chat` 加进 profile 的 `dsh.profile.bundles` 即自动加载（与 dsh-vision 同款机制），不再依赖手动编辑 profile 的 `cordis.patch.yml`（该文件可能被外部启动脚本清理）。

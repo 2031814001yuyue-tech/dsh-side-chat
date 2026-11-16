@@ -72,8 +72,172 @@ function createSideChatService(services, config) {
     return undefined
   }
 
-  /** 创建一条侧对话：真实 agent 会话，继承主会话组合与模型路由。 */
-  async function open(mainSessionId, firstMessage) {
+  /** 选择项规范化：provider/model 必须都在，reasoningEffort 可选。 */
+  function normalizeSelection(value) {
+    if (!value || typeof value !== 'object') return undefined
+    const provider = typeof value.provider === 'string' ? value.provider : ''
+    const model = typeof value.model === 'string' ? value.model : ''
+    if (!provider || !model) return undefined
+    const out = { provider, model }
+    if (typeof value.reasoningEffort === 'string' && value.reasoningEffort) out.reasoningEffort = value.reasoningEffort
+    return out
+  }
+
+  /** 侧对话当前实际使用的模型：优先问 agent 自己（它会跟随 model/selection 事件）。 */
+  function selectionOf(entry) {
+    const agent = agents.get(entry.sessionId)
+    if (agent && agent.model && typeof agent.model.current === 'function') {
+      try {
+        const current = agent.model.current()
+        if (current && current.provider && current.model) {
+          return {
+            provider: current.provider,
+            model: current.model,
+            ...current.reasoningEffort === undefined ? {} : { reasoningEffort: current.reasoningEffort },
+          }
+        }
+      } catch (err) {
+        /* 读取失败时回退到创建时记录的选择 */
+      }
+    }
+    return entry.selection || null
+  }
+
+  /** 可切换的模型目录：按 provider 分组，拿不到目录的 provider 直接跳过。 */
+  async function modelCatalog() {
+    const llm = services.llm
+    if (!llm || typeof llm.listProviders !== 'function' || typeof llm.listModels !== 'function') {
+      return { ok: true, providers: [] }
+    }
+    const providers = []
+    for (const provider of llm.listProviders()) {
+      if (!provider || !provider.id) continue
+      try {
+        const models = await llm.listModels(provider.id)
+        providers.push({
+          provider: provider.id,
+          name: provider.name || provider.id,
+          models: (Array.isArray(models) ? models : []).map((model) => ({
+            id: model.id,
+            name: model.name || model.id,
+            ...model.reasoning === undefined ? {} : { reasoning: model.reasoning },
+          })),
+        })
+      } catch (err) {
+        // 未配置/不可发现的 provider：跳过，不影响其它 provider
+      }
+    }
+    return { ok: true, providers }
+  }
+
+  /** 切换一条侧对话的模型：校验可用后写入该侧会话的 model/selection 事件。 */
+  async function selectModel(mainSessionId, sideId, selection) {
+    const entry = entryOf(mainSessionId, sideId)
+    if (!entry) return { ok: false, error: '未知侧对话' }
+    const sideAgent = agents.get(entry.sessionId)
+    if (!sideAgent || !sideAgent.model || typeof sideAgent.model.select !== 'function') {
+      return { ok: false, error: '侧对话 agent 不在线' }
+    }
+    const chosen = normalizeSelection(selection)
+    if (!chosen) return { ok: false, error: '参数缺失' }
+    const llm = services.llm
+    if (llm && typeof llm.resolveCallConfig === 'function') {
+      try {
+        await llm.resolveCallConfig(chosen)
+      } catch (err) {
+        return { ok: false, error: '该模型不可用：' + (err && err.message ? String(err.message) : String(err)) }
+      }
+    }
+    sideAgent.model.select(chosen)
+    entry.selection = chosen
+    entry.updatedAt = Date.now()
+    bumpVersion()
+    return { ok: true, selection: chosen }
+  }
+
+  /**
+   * 继承主对话上下文：把主会话「最近的若干轮」用户/助手文本抓出来，作为一条隐藏的
+   * plugin 注入消息交给侧 agent。
+   * 只带对话文字，工具调用/工具结果一律不继承。
+   * 两种范围：
+   *   recent（默认）—— 最近 ≤20 条消息、≤2 万字，够「我们在聊什么」的近期背景；
+   *   full          —— 主对话里全部用户/助手文字（同样不含工具）。
+   * 主对话没有已完成回合时返回 undefined（只能开独立上下文）。
+   */
+  const INHERIT_RECENT_TURNS = 10
+  const INHERIT_RECENT_CHARS = 20000
+  /** 继承模式规范化：true 视为 recent；未知值视为不继承。 */
+  function normalizeInheritMode(value) {
+    if (value === true) return 'recent'
+    if (value === 'recent' || value === 'full') return value
+    return null
+  }
+  async function buildInheritedContext(mainSessionId, mode) {
+    let events
+    const live = sessions.get(mainSessionId)
+    if (live && typeof live.snapshotEvents === 'function') {
+      events = live.snapshotEvents()
+    } else {
+      try {
+        const snap = await sessionQuery.readSession(mainSessionId)
+        events = snap && Array.isArray(snap.events) ? snap.events : []
+      } catch (err) {
+        return undefined
+      }
+    }
+    if (!Array.isArray(events) || events.length === 0) return undefined
+    // 只继承已收尾的回合：末尾正在跑的那一轮状态不完整
+    let end = -1
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i] && events[i].type === 'turn/end') {
+        end = i
+        break
+      }
+    }
+    if (end < 0) return undefined
+    const recent = mode !== 'full'
+    const picked = []
+    let chars = 0
+    for (let i = end; i >= 0; i -= 1) {
+      const event = events[i]
+      if (!event) continue
+      if (event.type === 'user/message') {
+        const source = event.data && event.data.source
+        if (!source || source.kind !== 'user') continue
+        const text = textOf(event.data && event.data.content).trim()
+        if (!text) continue
+        picked.push({ role: '用户', text })
+        chars += text.length
+      } else if (event.type === 'assistant/message') {
+        const text = textOf(event.data && event.data.message && event.data.message.content).trim()
+        if (!text) continue
+        picked.push({ role: '助手', text })
+        chars += text.length
+      } else {
+        continue
+      }
+      if (recent && (chars >= INHERIT_RECENT_CHARS || picked.length >= INHERIT_RECENT_TURNS * 2)) break
+    }
+    if (!picked.length) return undefined
+    picked.reverse()
+    const body = picked.map((item) => item.role + '：' + item.text).join('\n\n')
+    const head = recent
+      ? '【继承自主对话的最近上下文】\n以下是最新一轮往来里最近的' + picked.length + ' 条对话'
+      : '【继承自主对话的完整上下文】\n以下是主对话的全部对话（共 ' + picked.length + ' 条）'
+    return {
+      mode,
+      messageCount: picked.length,
+      text: head
+        + '，只包含用户与助手的文字，不含工具调用与工具输出。\n'
+        + '它只作为背景参考：不需要复述，也不要当成新的用户指令。\n\n'
+        + body,
+    }
+  }
+
+  /** 创建一条侧对话：真实 agent 会话，继承主会话组合；模型默认继承主会话，也可指定。
+   *  inherit = 'recent' | 'full'（或 true）时，把主对话的对话文字作为背景注入；
+   *  工具调用不继承。 */
+  async function open(mainSessionId, firstMessage, selection, inherit) {
     const mainAgent = agents.get(mainSessionId)
     if (!mainAgent) return { ok: false, error: '主会话不在线' }
     let count = 0
@@ -91,6 +255,28 @@ function createSideChatService(services, config) {
     // （同工具注册、同 prompt 段）。composedPreset 读作用域链，header 可能落后于
     // agent-preset/selected 事件，故实时解析作为回退。
     const effectivePreset = (agentPresets && agentPresets.composedPreset(mainAgent.ctx)) || mainAgent.session.header.agentPreset
+    // 模型：默认继承主会话当前路由（创建时快照），调用方也可指定别的模型。
+    // 优先取主 agent 记录的 model/selection（含推理强度），退回创建时的 options。
+    let inheritedSelection
+    try {
+      inheritedSelection = mainAgent.model && typeof mainAgent.model.current === 'function'
+        ? normalizeSelection(mainAgent.model.current())
+        : undefined
+    } catch (err) {
+      inheritedSelection = undefined
+    }
+    if (!inheritedSelection) {
+      inheritedSelection = normalizeSelection({
+        provider: mainAgent.options.provider,
+        model: mainAgent.options.model,
+        reasoningEffort: mainAgent.options.reasoningEffort,
+      })
+    }
+    const initialSelection = normalizeSelection(selection) || inheritedSelection
+    // 继承上下文：把主对话的对话文字抓成一段背景，等 agent 建好后以隐藏注入的方式交给它。
+    const inheritMode = normalizeInheritMode(inherit)
+    let inherited
+    if (inheritMode) inherited = await buildInheritedContext(mainSessionId, inheritMode)
     const handle = await agents.create({
       sessionId: sideId,
       meta: {
@@ -99,9 +285,10 @@ function createSideChatService(services, config) {
         agentPreset: effectivePreset,
       },
       agentOptions: {
-        provider: mainAgent.options.provider,
-        model: mainAgent.options.model,
+        provider: initialSelection.provider,
+        model: initialSelection.model,
         maxTokens: mainAgent.options.maxTokens,
+        ...initialSelection.reasoningEffort === undefined ? {} : { reasoningEffort: initialSelection.reasoningEffort },
       },
       setup: (agentCtx) => {
         if (!agentPresets) return undefined
@@ -124,8 +311,33 @@ function createSideChatService(services, config) {
       updatedAt: Date.now(),
       bringingBack: false,
       lastPreview: '',
+      selection: initialSelection,
+      inheritMode: inherited ? inherited.mode : null,
     }
     sideChats.set(sideId, entry)
+    // 继承来的上下文以 plugin 来源注入：agent 能看到，面板不会铺开（events() 过滤 plugin）
+    if (inherited) {
+      const sideAgent = agents.get(sideId)
+      if (sideAgent && typeof sideAgent.inject === 'function') {
+        try {
+          sideAgent.inject({
+            id: 'side-inherit-' + Date.now(),
+            role: 'user',
+            content: [{ type: 'text', text: inherited.text }],
+            source: {
+              // v4 会话格式拒绝 retired 的 kind:'plugin'，来源必须是生产者自己的名字
+              kind: 'sidechat',
+              form: 'notice',
+              summary: '继承自主对话的'
+                + (inherited.mode === 'full' ? '完整' : '最近')
+                + '上下文（' + inherited.messageCount + ' 条对话）',
+            },
+          })
+        } catch (err) {
+          console.error('[side-chat] 注入继承上下文失败', err)
+        }
+      }
+    }
     openSignals.set(mainSessionId, (openSignals.get(mainSessionId) || 0) + 1)
     bumpVersion()
     // 创建即归档：从会话列表/搜索中隐藏（归档只是列表记账，不影响 agent 生命周期）
@@ -140,7 +352,16 @@ function createSideChatService(services, config) {
       const res = await send(mainSessionId, sideId, firstMessage)
       if (!res.ok) return { ok: false, error: '已创建但首条消息发送失败：' + res.error }
     }
-    return { ok: true, id: sideId, title }
+    return {
+      ok: true,
+      id: sideId,
+      title,
+      inherit: Boolean(inherited),
+      inheritMode: inherited ? inherited.mode : null,
+      ...inheritMode && inherited === undefined
+        ? { notice: '主对话还没有已完成的回合，这条侧对话改成了独立上下文' }
+        : {},
+    }
   }
 
   /** 向侧对话注入一条真实用户消息并唤醒侧 agent。 */
@@ -173,6 +394,9 @@ function createSideChatService(services, config) {
         error: entry.error,
         lastPreview: entry.lastPreview || '',
         updatedAt: entry.updatedAt,
+        selection: selectionOf(entry),
+        inherit: Boolean(entry.inheritMode),
+        inheritMode: entry.inheritMode || null,
       })
     }
     chats.sort((a, b) => a.updatedAt - b.updatedAt)
@@ -256,8 +480,7 @@ function createSideChatService(services, config) {
         role: 'user',
         content: [{ type: 'text', text: '【' + entry.title + ' 摘要】\n' + summary }],
         source: {
-          kind: 'plugin',
-          plugin: 'sidechat',
+          kind: 'sidechat',
           form: 'notice',
           summary: entry.title + ' 摘要已注入（点击展开）',
         },
@@ -320,7 +543,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, modelCatalog, selectModel, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -332,6 +555,8 @@ return {
       commands: ctx.get('commands'),
       workspaceRegistry: ctx.get('workspaceRegistry'),
       agentPresets: ctx.get('agentPresets'),
+      // 可选：模型目录（换模型用）。缺失时面板不显示模型选择器。
+      llm: ctx.get('llm'),
     }
     const required = ['agents', 'sessions', 'sessionQuery', 'commands']
     // workspaceRegistry（dsh-workspace）在 web profile 的 host 平面通常存在；
@@ -354,7 +579,17 @@ return {
       const mainSessionId = strArg(args, 'mainSessionId')
       const firstMessage = args && typeof args.firstMessage === 'string' ? args.firstMessage : ''
       if (!mainSessionId) return { ok: false, error: '缺少主会话 ID' }
-      return sideChat.open(mainSessionId, firstMessage)
+      // inherit 可以是 'recent' / 'full'（旧调用方传 true 视为 recent）
+      return sideChat.open(mainSessionId, firstMessage, args && args.selection, args && args.inherit)
+    })
+    // 可切换的模型目录（按 provider 分组；服务缺失时返回空列表）
+    registerRpc('sidechat/models', () => sideChat.modelCatalog())
+    // 切换某条侧对话的模型（写入该侧会话的 model/selection，下一轮生效）
+    registerRpc('sidechat/select-model', (args) => {
+      const mainSessionId = strArg(args, 'mainSessionId')
+      const sideId = strArg(args, 'id')
+      if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
+      return sideChat.selectModel(mainSessionId, sideId, args && args.selection)
     })
     registerRpc('sidechat/send', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')

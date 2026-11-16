@@ -16,12 +16,18 @@ const PANEL_CSS = `
 #dsh-sidechat-toggle:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}
 #dsh-sidechat-toggle:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 
-#dsh-sidechat-panel{position:fixed;top:0;right:0;bottom:0;width:380px;max-width:92vw;min-width:300px;z-index:1200;pointer-events:auto;display:flex;flex-direction:column;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);border-left:1px solid var(--dsw-alias-border-l1);box-shadow:-8px 0 24px rgba(0,0,0,.18);font-size:13px;animation:dsh-sc-in .18s ease-out}
-.dsh-sc-resizer{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:ew-resize;touch-action:none;z-index:5}
+#dsh-sidechat-panel{position:fixed;top:max(12px,var(--dsh-frame-overlay-top,12px));right:12px;bottom:12px;width:380px;max-width:calc(100vw - 24px);min-width:min(300px,calc(100vw - 24px));z-index:1200;pointer-events:auto;-webkit-app-region:no-drag;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;background:var(--dsw-specific-menu);backdrop-filter:var(--dsw-menu-backdrop-filter);-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter);color:var(--dsw-alias-label-primary);border:0;border-radius:var(--dsw-radius-lg);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);font-size:13px;animation:dsh-sc-in .18s ease-out}
+#dsh-sidechat-panel :is(button,input,a,[role=button]){-webkit-app-region:no-drag}
+.dsh-sc-resizer{position:absolute;left:0;top:0;bottom:0;width:6px;cursor:ew-resize;touch-action:none;z-index:5}
 .dsh-sc-resizer:hover{background:var(--dsw-alias-border-l2)}
 .dsh-sc-resizer.dragging{background:var(--dsw-alias-brand-primary)}
 #dsh-sidechat-panel.dragging{user-select:none}
-.dsh-sc-pill{position:fixed;right:12px;bottom:16px;z-index:1200;pointer-events:auto;display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 4px 16px rgba(0,0,0,.18);cursor:pointer;font-size:12px;font-weight:500;animation:dsh-sc-in .15s ease-out}
+/* 官方右侧栏里的形态：一列页面，不是浮在页面上的卡片（与右栏自己的底色/字号一致）。 */
+.dsh-sc-tabbody{display:flex;flex-direction:column;height:100%;min-height:0;color:var(--dsw-alias-label-primary);font-size:13px}
+.dsh-sc-tabbody .dsh-sc-head{padding:10px 12px}
+.dsh-sc-tabbody .dsh-sc-msg{padding:10px 12px}
+.dsh-sc-tabbody .dsh-sc-list{max-height:36%}
+.dsh-sc-pill{position:fixed;right:12px;bottom:16px;z-index:1200;pointer-events:auto;-webkit-app-region:no-drag;display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:var(--dsw-specific-menu);backdrop-filter:var(--dsw-menu-backdrop-filter);-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter);color:var(--dsw-alias-label-primary);border:0;--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);cursor:pointer;font-size:12px;font-weight:500;animation:dsh-sc-in .15s ease-out}
 .dsh-sc-pill:hover{border-color:var(--dsw-alias-brand-primary)}
 .dsh-sc-pill-count{color:var(--dsw-alias-label-secondary);font-weight:400}
 @keyframes dsh-sc-in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
@@ -36,8 +42,10 @@ const PANEL_CSS = `
 .dsh-sc-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
 .dsh-sc-btn:disabled{opacity:.45;cursor:default}
 .dsh-sc-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.dsh-sc-btn.primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-overlay)}
-.dsh-sc-btn.primary:hover:not(:disabled){filter:brightness(1.08);color:var(--dsw-alias-bg-overlay)}
+.dsh-sc-select{flex:none;max-width:120px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:3px 6px;font-size:12px;cursor:pointer;outline:none}
+.dsh-sc-select:focus{border-color:var(--dsw-alias-brand-primary)}
+.dsh-sc-btn.primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color)}
+.dsh-sc-btn.primary:hover:not(:disabled){filter:brightness(1.08);color:var(--dsw-alias-label-on-color)}
 
 .dsh-sc-list{max-height:34%;overflow-y:auto;border-bottom:1px solid var(--dsw-alias-border-l1);padding:8px;display:flex;flex-direction:column;gap:2px;flex:none;scrollbar-width:thin}
 .dsh-sc-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent}
@@ -45,6 +53,7 @@ const PANEL_CSS = `
 .dsh-sc-item.sel{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1)}
 .dsh-sc-item-title{flex:1;min-width:0}
 .dsh-sc-item-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.dsh-sc-item-tag{display:inline-block;margin-left:6px;padding:0 5px;border-radius:999px;font-size:10px;font-weight:400;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2)}
 .dsh-sc-item-preview{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11px;margin-top:2px}
 
 .dsh-sc-chip{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 8px}
@@ -70,7 +79,7 @@ const PANEL_CSS = `
 .dsh-sc-bubble blockquote{margin:6px 0;padding:2px 10px;border-left:3px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .dsh-sc-bubble hr{border:none;border-top:1px solid var(--dsw-alias-border-l1);margin:8px 0}
 .dsh-sc-bubble a{color:var(--dsw-alias-brand-primary)}
-.dsh-sc-row.user .dsh-sc-bubble{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-overlay);border-bottom-right-radius:4px}
+.dsh-sc-row.user .dsh-sc-bubble{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color);border-bottom-right-radius:4px}
 .dsh-sc-row.assistant .dsh-sc-bubble{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-bottom-left-radius:4px}
 
 .dsh-sc-empty{color:var(--dsw-alias-label-secondary);text-align:center;margin:auto;padding:0 16px;line-height:1.7;font-size:12px;white-space:pre-line}
@@ -270,6 +279,11 @@ return {
     if (!slots) return
     styles.insert(PANEL_CSS)
 
+    // 官方右侧栏（dsh-client-ui-sidebar-right）。把「侧边对话」注册成一个右栏 tab 类型，
+    // 点击 ⤳ 或 /side 时在右栏打开；服务不可用时退回原来的浮层面板。
+    const SIDEBAR_TAB_KIND = 'dsh-side-chat'
+    let sidebarRightApi = null
+
     /** 订阅 store 的面板开关/最小化状态。 */
     function usePanelState() {
       const [isOpen, setLocal] = React.useState(store.getOpen())
@@ -281,10 +295,42 @@ return {
       return { isOpen, isMinimized }
     }
 
-    // ---- 会话标题栏右侧入口按钮 + openSignal 监听（/side 命令自动开面板） ----
+    /**
+     * 当前「主视图」会话 id。
+     * shell.overlay 的 standardProps 只提供 hooks（没有 sessionId 标准 prop），
+     * 因此按 DSH 自身 ui-layout 的做法，从会话列表快照里取 retainedBy.mainView > 0 的那条。
+     */
+    function useCurrentSessionId(props) {
+      return props.useSessions((state) => {
+        const byId = (state && state.byId) || {}
+        for (const id of Object.keys(byId)) {
+          const retain = byId[id] && byId[id].retainedBy
+          if (retain && (retain.mainView || 0) > 0) return id
+        }
+        return undefined
+      })
+    }
+
+    /**
+     * 打开侧边对话：优先在官方右侧栏开 tab（像子智能体对话那样占一列），
+     * 右侧栏服务不可用或打开失败时，回退到原来的浮层面板。
+     */
+    function openSidechat(sessionId) {
+      if (sidebarRightApi && sessionId) {
+        try {
+          sidebarRightApi.openTabIn(sessionId, SIDEBAR_TAB_KIND)
+          return true
+        } catch (err) {
+          console.error('[side-chat] 右侧栏打开失败，回退浮层面板', err)
+        }
+      }
+      return false
+    }
+
+    // ---- 会话标题栏右侧入口按钮 + openSignal 监听（/side 命令自动打开） ----
     function SideToggle(props) {
       const { isOpen, isMinimized } = usePanelState()
-      const sessionId = props.sessionId
+      const sessionId = props.sessionId || useCurrentSessionId(props)
       React.useEffect(() => {
         if (!timer) return undefined
         return timer.interval(async () => {
@@ -300,7 +346,7 @@ return {
               }
               if (res.openSignal > prev) {
                 lastOpenSignals.set(sessionId, res.openSignal)
-                store.setOpen(true)
+                if (!openSidechat(sessionId)) store.setOpen(true)
               }
             }
           } catch (err) {
@@ -314,14 +360,16 @@ return {
         'aria-label': isMinimized ? '恢复侧边对话' : '侧边对话（并行 agent 会话，独立上下文）',
         title: isMinimized ? '恢复侧边对话' : '侧边对话（并行 agent 会话，独立上下文）',
         onClick: () => {
+          if (openSidechat(sessionId)) return
           if (store.getOpen() && !store.getMinimized()) store.setOpen(false)
           else store.setOpen(true)
         },
       }, '⤳')
     }
 
-    // ---- 侧边面板 ----
+    // ---- 侧边面板（inline=true 时作为官方右侧栏 tab 正文渲染，否则是浮层面板） ----
     function SidePanel(props) {
+      const inline = props.inline === true
       const { isOpen, isMinimized } = usePanelState()
       const [chats, setChats] = React.useState([])
       const [selectedId, setSelectedId] = React.useState(null)
@@ -329,11 +377,26 @@ return {
       const [input, setInput] = React.useState('')
       const [notice, setNotice] = React.useState('')
       const [bringingBack, setBringingBack] = React.useState(false)
+      // 模型：可选目录按 provider 分组；nextSelection 只影响下一条新建的侧对话
+      const [models, setModels] = React.useState([])
+      const [nextSelection, setNextSelection] = React.useState('')
+      // 新建侧对话的上下文来源：none（独立）| recent（最近若干轮）| full（全部对话文字）
+      const [nextInherit, setNextInherit] = React.useState('none')
       const msgBoxRef = React.useRef(null)
       const [width, setWidth] = React.useState(380)
       const [dragging, setDragging] = React.useState(false)
       const dragRef = React.useRef(null)
-      const sessionId = props.useSessions((s) => s.current)
+      // 右栏 tab 是 session 作用域席位，直接带 sessionId；浮层只能从会话列表快照里推。
+      const sessionId = props.sessionId || useCurrentSessionId(props)
+
+      // 模型选择项 <-> 下拉框值（'provider::model'）
+      const keyOfSelection = (sel) => (sel && sel.provider && sel.model ? sel.provider + '::' + sel.model : '')
+      const parseSelection = (key) => {
+        if (!key) return undefined
+        const at = key.indexOf('::')
+        if (at <= 0) return undefined
+        return { provider: key.slice(0, at), model: key.slice(at + 2) }
+      }
 
       const refreshState = React.useCallback(async () => {
         if (!sessionId) return
@@ -371,8 +434,19 @@ return {
         }
       }, [sessionId, selectedId])
 
+      // 模型目录只在挂载时取一次；取不到就不显示选择器（不影响已有功能）
       React.useEffect(() => {
-        if (!isOpen) return undefined
+        let alive = true
+        host.call('sidechat/models')
+          .then((res) => {
+            if (alive && res && Array.isArray(res.providers)) setModels(res.providers)
+          })
+          .catch((err) => console.error('[side-chat] 模型目录获取失败', err))
+        return () => { alive = false }
+      }, [])
+
+      React.useEffect(() => {
+        if (!inline && !isOpen) return undefined
         refreshState()
         refreshEvents()
         if (!timer) return undefined
@@ -386,6 +460,8 @@ return {
         if (chats.length === 0) {
           setSelectedId(null)
           setMessages([])
+          // 关掉最后一条后不留旧提示（比如「主对话正忙」）
+          setNotice('')
         }
       }, [chats])
 
@@ -420,16 +496,17 @@ return {
         [messages],
       )
 
-      if (!isOpen) return null
+      if (!inline && !isOpen) return null
 
-      // 最小化态：右侧底部小胶囊（对话继续后台运行，点击恢复）
-      if (isMinimized) {
+      // 最小化态（仅浮层）：右侧底部小胶囊（对话继续后台运行，点击恢复）
+      if (!inline && isMinimized) {
         const runningCount = chats.filter((c) => c.status === 'running').length
         return React.createElement('div', {
           className: 'dsh-sc-pill',
           role: 'button',
           title: '恢复侧边对话',
           onClick: () => store.setMinimized(false),
+          'data-window-drag-exclude': '',
         },
           React.createElement('span', { className: 'dsh-sc-dot' + (runningCount ? ' running' : '') }),
           React.createElement('span', null, '⤳ 侧边对话'),
@@ -446,15 +523,40 @@ return {
         }
         setNotice('')
         try {
-          const res = await host.call('sidechat/open', { mainSessionId: sessionId })
+          const chosen = parseSelection(nextSelection)
+          const res = await host.call('sidechat/open', {
+            mainSessionId: sessionId,
+            selection: chosen,
+            inherit: nextInherit === 'none' ? undefined : nextInherit,
+          })
           if (res && res.ok) {
             setSelectedId(res.id)
+            if (res.notice) setNotice(res.notice)
             refreshState()
           } else {
             setNotice((res && res.error) || '创建失败')
           }
         } catch (err) {
           setNotice('创建失败：' + String(err))
+        }
+      }
+
+      // 换模型：有选中的侧对话就切它（下一轮生效），没有就只记下一条新建用的模型
+      const pickModel = async (key) => {
+        if (!selected) {
+          setNextSelection(key)
+          return
+        }
+        const selection = parseSelection(key)
+        if (!selection) return
+        setNotice('正在切换模型…')
+        try {
+          const res = await host.call('sidechat/select-model', { mainSessionId: sessionId, id: selected.id, selection })
+          if (res && res.ok) setNotice('已切换模型，下一轮生效')
+          else setNotice((res && res.error) || '切换模型失败')
+          refreshState()
+        } catch (err) {
+          setNotice('切换模型失败：' + String(err))
         }
       }
 
@@ -544,18 +646,57 @@ return {
 
       const isErrorText = (text) => /失败|错误|上限|正忙|不能为空|未知|缺失|不在线/.test(text)
 
+      // ---- 模型选择器（目录拿不到时不渲染，一切照旧） ----
+      const knownModelKeys = new Set()
+      for (const group of models) {
+        for (const model of group.models) knownModelKeys.add(group.provider + '::' + model.id)
+      }
+      // 上下文来源只在「新建」时可选；已建的侧对话模式固定（独立或继承在创建时决定）
+      const inheritPicker = selected ? null : React.createElement('select', {
+        className: 'dsh-sc-select',
+        title: '新建侧对话的上下文：独立 / 继承最近（最近约 20 条对话）/ 继承完整（主对话全部对话文字）——两种继承都不带工具调用',
+        value: nextInherit,
+        onChange: (e) => setNextInherit(e.target.value),
+      },
+        React.createElement('option', { value: 'none' }, '独立上下文'),
+        React.createElement('option', { value: 'recent' }, '继承最近'),
+        React.createElement('option', { value: 'full' }, '继承完整'),
+      )
+      const pickerValue = selected ? keyOfSelection(selected.selection) : nextSelection
+      const picker = models.length === 0 ? null : React.createElement('select', {
+        className: 'dsh-sc-select',
+        title: selected ? '该侧对话使用的模型（切换后下一轮生效）' : '新建侧对话使用的模型（默认跟随主对话）',
+        value: pickerValue,
+        onChange: (e) => pickModel(e.target.value),
+      },
+        selected ? null : React.createElement('option', { value: '' }, '跟随主对话'),
+        pickerValue && !knownModelKeys.has(pickerValue)
+          ? React.createElement('option', { value: pickerValue },
+              ((selected && selected.selection && selected.selection.model) || '当前模型') + '（当前）')
+          : null,
+        models.map((group) => React.createElement('optgroup', { key: 'provider:' + group.provider, label: group.name },
+          group.models.map((model) => React.createElement('option', { key: group.provider + '::' + model.id, value: group.provider + '::' + model.id }, model.name)))),
+      )
+
+      // 右侧栏里 tab 条已经写着「侧边对话」，正文头不再重复标题，只留一行说明 + 新建。
       const head = React.createElement('div', { className: 'dsh-sc-head' },
-        React.createElement('div', { className: 'dsh-sc-head-title' },
-          React.createElement('span', { className: 'dsh-sc-head-name' }, '⤳ 侧边对话'),
-          React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
-        ),
+        inline
+          ? React.createElement('div', { className: 'dsh-sc-head-title' },
+              React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
+            )
+          : React.createElement('div', { className: 'dsh-sc-head-title' },
+              React.createElement('span', { className: 'dsh-sc-head-name' }, '⤳ 侧边对话'),
+              React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
+            ),
+        inheritPicker,
+        picker,
         React.createElement('button', { className: 'dsh-sc-btn primary', onClick: createChat }, '＋ 新建'),
-        React.createElement('button', {
+        inline ? null : React.createElement('button', {
           className: 'dsh-sc-btn',
           onClick: () => store.setMinimized(true),
           title: '缩小到右侧（对话继续运行）',
         }, '—'),
-        React.createElement('button', { className: 'dsh-sc-btn', onClick: () => store.setOpen(false), title: '关闭面板' }, '✕'),
+        inline ? null : React.createElement('button', { className: 'dsh-sc-btn', onClick: () => store.setOpen(false), title: '关闭面板' }, '✕'),
       )
 
       const chipOf = (c) => {
@@ -578,7 +719,12 @@ return {
               onClick: () => setSelectedId(c.id),
             },
               React.createElement('div', { className: 'dsh-sc-item-title' },
-                React.createElement('span', { className: 'dsh-sc-item-name' }, c.title),
+                React.createElement('span', { className: 'dsh-sc-item-name' },
+                  c.title,
+                  c.inheritMode
+                    ? React.createElement('span', { className: 'dsh-sc-item-tag' }, c.inheritMode === 'full' ? '继承·完整' : '继承·最近')
+                    : null,
+                ),
                 React.createElement('span', { className: 'dsh-sc-item-preview' }, c.lastPreview || (c.status === 'running' ? '正在思考…' : '还没有消息')),
               ),
               chipOf(c),
@@ -624,7 +770,8 @@ return {
                 placeholder: '输入消息…',
                 onChange: (e) => setInput(e.target.value),
                 onKeyDown: (e) => {
-                  if (e.key === 'Enter') send()
+                  // 输入法组词中按 Enter 是上屏候选字，不应发送消息（macOS/Windows IME 同款判断）。
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) send()
                 },
               }),
               React.createElement('button', {
@@ -644,10 +791,24 @@ return {
         ? React.createElement('div', { className: 'dsh-sc-error' }, '该侧对话出错：' + selected.error)
         : null
 
+      if (inline) {
+        return React.createElement('div', { className: 'dsh-sc-tabbody' },
+          head,
+          list,
+          noticeBar,
+          selectedError,
+          body,
+          foot,
+        )
+      }
+
       return React.createElement('div', {
         id: 'dsh-sidechat-panel',
         className: dragging ? 'dragging' : null,
         style: { width: width + 'px' },
+        // macOS 隐藏标题栏：面板常驻在窗口顶部，必须显式声明「不是拖拽区」，
+        // 否则点住按钮会变成拖动窗口，按钮永远收不到 click。
+        'data-window-drag-exclude': '',
       },
         resizer,
         head,
@@ -659,14 +820,63 @@ return {
       )
     }
 
+    /** 官方右侧栏 tab 正文：复用同一套内容，只是不再浮在页面上。 */
+    function SideChatTabBody(props) {
+      return React.createElement(SidePanel, Object.assign({}, props, { inline: true }))
+    }
+
+    /** 右栏「开始」页里的入口框图标（与同排其它条目的 22/26px 描边图标同款）。 */
+    function SideChatGlyph(props) {
+      const size = (props && props.size) || 22
+      return React.createElement('svg', {
+        width: size, height: size, viewBox: '0 0 22 22', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.4, strokeLinejoin: 'round',
+        className: props && props.className, 'aria-hidden': 'true', focusable: 'false',
+      },
+        React.createElement('rect', { x: 2.6, y: 3.6, width: 16.8, height: 14.8, rx: 3.2 }),
+        React.createElement('line', { x1: 13.2, y1: 3.6, x2: 13.2, y2: 18.4 }),
+        React.createElement('path', { d: 'M15.9 8.6l2 2-2 2' }),
+      )
+    }
+
     // ---- Slot 注册 ----
     slots.inject('conversation.session.header.actions', () => slots.register(
       { name: 'conversation.session.header.actions', id: 'sidechat-toggle', order: 30 },
       SideToggle,
     ))
+    // 浮层兜底：右栏不可用时仍可用（shell.overlay 的 standardProps 自带 useSessions）。
     slots.inject('shell.overlay', () => slots.register(
       { name: 'shell.overlay', id: 'sidechat-panel', order: 100 },
       SidePanel,
     ))
+
+    // ---- 官方右侧栏 tab 类型（ctx.sidebarRightTabs + ctx.sidebarRight）----
+    // 右栏服务可能比本插件晚就绪，用 ctx.inject 等它就绪，不阻塞插件启动；
+    // 服务缺失时只保留浮层面板。
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['sidebarRight', 'sidebarRightTabs'], (scope) => {
+        const right = scope.sidebarRight || (scope.get && scope.get('sidebarRight'))
+        const tabs = scope.sidebarRightTabs || (scope.get && scope.get('sidebarRightTabs'))
+        if (!right || !tabs) return
+        sidebarRightApi = right
+        scope.effect(() => tabs.register({
+          id: SIDEBAR_TAB_KIND,
+          kind: SIDEBAR_TAB_KIND,
+          title: () => '侧边对话',
+          // 右栏「开始」页里的入口框：点一下就把「开始」换成侧边对话页。
+          guide: [{
+            id: 'sidechat',
+            order: 35,
+            title: () => '侧边对话',
+            description: () => '并行 agent 会话，独立上下文',
+            icon: SideChatGlyph,
+          }],
+        }), 'side-chat: sidebar tab type')
+        slots.inject('sidebar.right.pane.tab', () => slots.register(
+          { name: 'sidebar.right.pane.tab', key: SIDEBAR_TAB_KIND },
+          SideChatTabBody,
+        ))
+      })
+    }
   },
 }
