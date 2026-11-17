@@ -460,6 +460,60 @@ function createSideChatService(services, config) {
     }
   }
 
+  /** 当前等待回答的问题（走 DSH 问答通道的 session projection，callId + 问题定义）。 */
+  function pendingQuestions(entry) {
+    const service = services.userQuestions
+    if (!service || typeof service.continued !== 'function') return []
+    const sideAgent = agents.get(entry.sessionId)
+    if (!sideAgent) return []
+    let items = []
+    try {
+      items = service.continued(sideAgent) || []
+    } catch (err) {
+      return []
+    }
+    return items.map((item) => ({
+      callId: String(item.callId || ''),
+      questions: (Array.isArray(item.questions) ? item.questions : []).map((question) => ({
+        id: String(question.id || ''),
+        text: String(question.question || ''),
+        ...question.detail === undefined ? {} : { detail: String(question.detail) },
+        multiSelect: question.multiSelect === true,
+        options: (Array.isArray(question.options) ? question.options : []).map((option) => ({
+          label: String((option && (option.label || option.value)) || ''),
+          ...option && option.description === undefined ? {} : { description: String(option.description) },
+        })).filter((option) => option.label),
+      })).filter((question) => question.id),
+    })).filter((item) => item.callId && item.questions.length)
+  }
+
+  /** 回答侧对话的问题：走问答通道的 answer（内部会 steer 一条 user-question-reply 消息）。 */
+  async function answer(mainSessionId, sideId, callId, answers) {
+    await restoreFor(mainSessionId)
+    const entry = entryOf(mainSessionId, sideId)
+    if (!entry) return { ok: false, error: '未知侧对话' }
+    const service = services.userQuestions
+    if (!service || typeof service.answer !== 'function') return { ok: false, error: '宿主没有问答通道' }
+    if (typeof callId !== 'string' || !callId) return { ok: false, error: '参数缺失' }
+    if (!Array.isArray(answers) || answers.length === 0) return { ok: false, error: '参数缺失' }
+    const sideAgent = agents.get(entry.sessionId)
+    if (!sideAgent) return { ok: false, error: '侧对话不在线' }
+    const batch = answers
+      .filter((item) => item && typeof item.id === 'string')
+      .map((item) => ({
+        id: item.id,
+        selected: Array.isArray(item.selected) ? item.selected.map((value) => String(value)) : [],
+        ...item.custom === undefined || item.custom === '' ? {} : { custom: String(item.custom) },
+      }))
+    if (batch.length === 0) return { ok: false, error: '参数缺失' }
+    try {
+      const handled = await service.answer(sideAgent, callId, { answers: batch })
+      return handled ? { ok: true } : { ok: false, error: '这个问题已经结束或在等待中' }
+    } catch (err) {
+      return { ok: false, error: '回答失败：' + messageOf(err) }
+    }
+  }
+
   /** 停止当前回合：调用 agent 的 cancel（等价主对话的「停止」）。 */
   async function stop(mainSessionId, sideId) {
     await restoreFor(mainSessionId)
@@ -851,12 +905,14 @@ function createSideChatService(services, config) {
       }
       break
     }
+    const questions = pendingQuestions(entry)
     return {
       ok: true,
       messages,
       trace: trace.slice(-12),
       running: entry.status === 'running' || entry.bringingBack === true,
-      ...question ? { question } : {},
+      ...questions.length ? { questions } : {},
+      ...question && !questions.length ? { question } : {},
     }
   }
 
@@ -979,7 +1035,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, stop, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, stop, answer, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -997,6 +1053,8 @@ return {
       costMeter: ctx.get('costMeter'),
       // 可选：会话标题服务（重命名走它的 rename；缺失时直接写 session/title 事件）
       sessionTitle: ctx.get('sessionTitle'),
+      // 可选：问答通道（侧对话问用户问题时用它的 continued/answer）
+      userQuestions: ctx.get('userQuestions'),
     }
     const required = ['agents', 'sessions', 'sessionQuery', 'commands']
     // workspaceRegistry（dsh-workspace）在 web profile 的 host 平面通常存在；
@@ -1063,6 +1121,13 @@ return {
       const sideId = strArg(args, 'id')
       if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
       return sideChat.bringBack(mainSessionId, sideId)
+    })
+    // 回答侧对话正在等待的问题（走问答通道）
+    registerRpc('sidechat/answer', (args) => {
+      const mainSessionId = strArg(args, 'mainSessionId')
+      const sideId = strArg(args, 'id')
+      if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
+      return sideChat.answer(mainSessionId, sideId, args && args.callId, args && args.answers)
     })
     // 停止侧对话当前回合
     registerRpc('sidechat/stop', (args) => {

@@ -123,6 +123,22 @@ const PANEL_CSS = `
 .dsh-sc-trace-kind{flex:none;color:var(--dsw-alias-label-tertiary);opacity:.8}
 .dsh-sc-trace-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .dsh-sc-trace-row.result .dsh-sc-trace-text{color:var(--dsw-alias-label-tertiary)}
+#dsh-sidechat-toggle{position:relative}
+.dsh-sc-toggle-badge{position:absolute;top:-2px;right:-2px;min-width:14px;height:14px;border-radius:7px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color);font-size:9px;line-height:14px;text-align:center;padding:0 3px}
+.dsh-sc-question{margin:2px 0 10px;padding:8px 10px;border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent);border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 35%,transparent);display:flex;flex-direction:column;gap:5px}
+.dsh-sc-question-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.dsh-sc-question-text{font-size:12.5px;line-height:1.5;color:var(--dsw-alias-label-primary);white-space:pre-wrap}
+.dsh-sc-question-options{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.dsh-sc-question-option{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
+.dsh-sc-question-hint{font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.dsh-sc-q-item{display:flex;flex-direction:column;gap:5px;margin-top:2px}
+.dsh-sc-q-detail{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap}
+.dsh-sc-q-option{cursor:pointer;font:inherit;font-size:11.5px;padding:3px 10px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);transition:background .12s,border-color .12s,color .12s}
+.dsh-sc-q-option:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
+.dsh-sc-q-option.active{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color)}
+.dsh-sc-q-custom{font:inherit;font-size:12px;padding:5px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);outline:none}
+.dsh-sc-q-custom:focus{border-color:var(--dsw-alias-brand-primary)}
+.dsh-sc-question-actions{display:flex;justify-content:flex-end;margin-top:2px}
 .dsh-sc-usage{display:flex;gap:10px;justify-content:flex-end;font-size:11px;line-height:1.4;color:var(--dsw-alias-label-tertiary);flex:none;padding:0 2px}
 
 /* ---------- 空态 / 提示 / 错误 ---------- */
@@ -459,6 +475,9 @@ return {
       const [running, setRunning] = React.useState(false)
       // 侧对话正在等待用户回答的问题（ask_user_question 已调用、未答复）
       const [question, setQuestion] = React.useState(null)
+      // 问答通道的待答问题（callId + 问题定义）与当前作答草稿
+      const [questions, setQuestions] = React.useState([])
+      const [answerDraft, setAnswerDraft] = React.useState({})
       // 列表页 / 对话页：默认列表，点某条进入对话（返回即列表）
       const [view, setView] = React.useState('list')
       // 刚新建、state 还没轮询到的对话 id（避免被「选中项不存在」的保护逻辑弹回列表）
@@ -539,6 +558,7 @@ return {
             setTrace(Array.isArray(res.trace) ? res.trace : [])
             setRunning(res.running === true)
             setQuestion(res.question || null)
+            setQuestions(Array.isArray(res.questions) ? res.questions : [])
           }
         } catch (err) {
           console.error('[side-chat] events 失败', err)
@@ -1055,7 +1075,78 @@ return {
           )
         : null
 
-      const questionBox = question && selected
+      const setDraft = (callId, questionId, patch) => setAnswerDraft((prev) => {
+        const call = prev[callId] || { selected: {}, custom: {} }
+        return Object.assign({}, prev, {
+          [callId]: {
+            selected: Object.assign({}, call.selected, patch.selected === undefined ? {} : { [questionId]: patch.selected }),
+            custom: Object.assign({}, call.custom, patch.custom === undefined ? {} : { [questionId]: patch.custom }),
+          },
+        })
+      })
+      const submitAnswer = async (item) => {
+        if (!selectedId) return
+        const draft = answerDraft[item.callId] || { selected: {}, custom: {} }
+        const answers = item.questions.map((one) => {
+          const selected = (draft.selected && draft.selected[one.id]) || []
+          const custom = (draft.custom && draft.custom[one.id]) || ''
+          return { id: one.id, selected, ...custom ? { custom } : {} }
+        })
+        try {
+          const res = await host.call('sidechat/answer', { mainSessionId: sessionId, id: selectedId, callId: item.callId, answers })
+          setNotice(res && res.ok ? '已提交回答' : (res && res.error) || '回答失败')
+          if (res && res.ok) refreshEvents()
+        } catch (err) {
+          setNotice('回答失败：' + String(err))
+        }
+      }
+
+      const questionsBox = selected && questions.length
+        ? questions.map((item) => React.createElement('div', { className: 'dsh-sc-question', key: item.callId },
+            React.createElement('div', { className: 'dsh-sc-question-title' }, '侧对话在等你回答'),
+            item.questions.map((one) => {
+              const draft = answerDraft[item.callId] || {}
+              const selectedLabels = (draft.selected && draft.selected[one.id]) || []
+              const customText = (draft.custom && draft.custom[one.id]) || ''
+              return React.createElement('div', { className: 'dsh-sc-q-item', key: one.id },
+                React.createElement('div', { className: 'dsh-sc-question-text' }, one.text),
+                one.detail ? React.createElement('div', { className: 'dsh-sc-q-detail' }, one.detail) : null,
+                one.options && one.options.length
+                  ? React.createElement('div', { className: 'dsh-sc-question-options' },
+                      one.options.map((option) => {
+                        const active = selectedLabels.indexOf(option.label) >= 0
+                        return React.createElement('button', {
+                          key: option.label,
+                          type: 'button',
+                          className: 'dsh-sc-q-option' + (active ? ' active' : ''),
+                          title: option.description || '',
+                          onClick: () => {
+                            const next = one.multiSelect
+                              ? active ? selectedLabels.filter((label) => label !== option.label) : selectedLabels.concat(option.label)
+                              : [option.label]
+                            setDraft(item.callId, one.id, { selected: next })
+                          },
+                        }, option.label)
+                      }))
+                  : null,
+                React.createElement('input', {
+                  className: 'dsh-sc-q-custom',
+                  placeholder: one.options && one.options.length ? '或输入自定义回答…' : '输入你的回答…',
+                  value: customText,
+                  onChange: (e) => setDraft(item.callId, one.id, { custom: e.target.value }),
+                  onKeyDown: (e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) submitAnswer(item)
+                  },
+                }),
+              )
+            }),
+            React.createElement('div', { className: 'dsh-sc-question-actions' },
+              React.createElement('button', { className: 'dsh-sc-btn primary', onClick: () => submitAnswer(item) }, '提交回答'),
+            ),
+          ))
+        : null
+
+      const questionBox = !questions.length && question && selected
         ? React.createElement('div', { className: 'dsh-sc-question' },
             React.createElement('div', { className: 'dsh-sc-question-title' }, '侧对话在等你回答'),
             React.createElement('div', { className: 'dsh-sc-question-text' }, String(question.text || '')),
@@ -1073,6 +1164,7 @@ return {
 
       const body = selected
         ? React.createElement('div', { ref: msgBoxRef, className: 'dsh-sc-msg' },
+            questionsBox,
             questionBox,
             traceBox,
             renderedMessages.length === 0
