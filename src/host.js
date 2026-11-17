@@ -460,8 +460,57 @@ function createSideChatService(services, config) {
     }
   }
 
-  /** 当前等待回答的问题（走 DSH 问答通道的 session projection，callId + 问题定义）。 */
+  /** 本插件接下的 user-questions/request（waterfall 监听）对应的待答问题。 */
+  const pendingQuestionRequests = new Map()
+
+  /**
+   * 接住侧对话的问答请求：侧 agent 调 ask_user_question 时，DSH 在
+   * 「user-questions/request」waterfall 上找应答者；我们在这里认领，
+   * 把问题交给面板作答，用户提交后 resolve({answers})。
+   * 不是侧对话的请求原样 next()，不影响主对话。
+   */
+  function questionRequest(request, next) {
+    const agent = request && request.agent
+    const entry = agent ? sideChats.get(agent.id) : undefined
+    if (!entry) return next()
+    const key = 'side-q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+    const questions = (Array.isArray(request.questions) ? request.questions : []).map((question) => ({
+      id: String(question.id || ''),
+      text: String(question.question || ''),
+      ...question.detail === undefined ? {} : { detail: String(question.detail) },
+      multiSelect: question.multiSelect === true,
+      options: (Array.isArray(question.options) ? question.options : []).map((option) => ({
+        label: String((option && (option.label || option.value)) || ''),
+        ...option && option.description === undefined ? {} : { description: String(option.description) },
+      })).filter((option) => option.label),
+    })).filter((question) => question.id)
+    if (questions.length === 0) return next()
+    const promise = new Promise((resolve, reject) => {
+      const item = { key, resolve, reject, entry, questions }
+      pendingQuestionRequests.set(key, item)
+      const cleanup = () => {
+        pendingQuestionRequests.delete(key)
+        if (entry.questionKey === key) entry.questionKey = null
+        bumpVersion()
+      }
+      item.cleanup = cleanup
+      if (request.signal && typeof request.signal.addEventListener === 'function') {
+        request.signal.addEventListener('abort', () => {
+          cleanup()
+          reject(new Error('question aborted'))
+        }, { once: true })
+      }
+    })
+    entry.questionKey = key
+    entry.updatedAt = Date.now()
+    bumpVersion()
+    return promise
+  }
+
+  /** 当前等待回答的问题（优先本插件接下的请求，其次 session projection 里可续答的）。 */
   function pendingQuestions(entry) {
+    const owned = entry.questionKey ? pendingQuestionRequests.get(entry.questionKey) : undefined
+    if (owned) return [{ callId: owned.key, questions: owned.questions }]
     const service = services.userQuestions
     if (!service || typeof service.continued !== 'function') return []
     const sideAgent = agents.get(entry.sessionId)
@@ -498,6 +547,21 @@ function createSideChatService(services, config) {
     if (!Array.isArray(answers) || answers.length === 0) return { ok: false, error: '参数缺失' }
     const sideAgent = agents.get(entry.sessionId)
     if (!sideAgent) return { ok: false, error: '侧对话不在线' }
+    const pending = pendingQuestionRequests.get(callId)
+    const batchFor = (list) => list
+      .filter((item) => item && typeof item.id === 'string')
+      .map((item) => ({
+        id: item.id,
+        selected: Array.isArray(item.selected) ? item.selected.map((value) => String(value)) : [],
+        ...item.custom === undefined || item.custom === '' ? {} : { custom: String(item.custom) },
+      }))
+    if (pending) {
+      const owned = batchFor(answers)
+      if (owned.length === 0) return { ok: false, error: '参数缺失' }
+      pending.cleanup()
+      pending.resolve({ answers: owned })
+      return { ok: true }
+    }
     const batch = answers
       .filter((item) => item && typeof item.id === 'string')
       .map((item) => ({
@@ -522,6 +586,16 @@ function createSideChatService(services, config) {
     if (entry.bringingBack) return { ok: false, error: '正在带回中，稍后再试' }
     const sideAgent = agents.get(entry.sessionId)
     if (!sideAgent) return { ok: false, error: '侧对话不在线' }
+    // 先把待答问题拒掉，避免工具继续等答复
+    if (entry.questionKey && pendingQuestionRequests.has(entry.questionKey)) {
+      const pending = pendingQuestionRequests.get(entry.questionKey)
+      pending.cleanup()
+      try {
+        pending.reject(new Error('用户停止了这一轮'))
+      } catch (err) {
+        // ignore
+      }
+    }
     if (entry.status !== 'running' || typeof sideAgent.cancel !== 'function') return { ok: true, stopped: false }
     try {
       // 与 DSH 自己的停止一致：传 aborted 原因，turn/end 会记录
@@ -989,6 +1063,15 @@ function createSideChatService(services, config) {
     await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
+    if (entry.questionKey && pendingQuestionRequests.has(entry.questionKey)) {
+      const pending = pendingQuestionRequests.get(entry.questionKey)
+      pending.cleanup()
+      try {
+        pending.reject(new Error('侧对话已归档'))
+      } catch (err) {
+        // ignore
+      }
+    }
     sideChats.delete(sideId)
     if (workspaceRegistry) {
       try {
@@ -1035,7 +1118,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, stop, answer, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, stop, answer, questionRequest, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -1071,6 +1154,8 @@ return {
     // ---- 事件监听：状态同步 ----
     ctx.on('agent/status', ({ agent, status }) => sideChat.onAgentStatus(agent.id, status))
     ctx.on('agent/error', ({ agent, error }) => sideChat.onAgentError(agent.id, error))
+    // 问答通道：侧对话调 ask_user_question 时，作为 waterfall 应答者接住问题交给面板
+    ctx.on('user-questions/request', (request, next) => sideChat.questionRequest(request, next))
 
     // ---- RPC（Client 面板）----
     registerRpc('sidechat/open', (args) => {

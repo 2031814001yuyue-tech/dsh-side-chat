@@ -15,7 +15,7 @@
 - **列表/对话两段式**：默认停在对话列表，点条目进对话页；新建后直接进入新对话；归档后回列表。
 - **重命名**：列表项 ✎ 内联改名（回车/失焦提交、Esc 取消），走 `sessionTitle.rename` 或 `session/title`，重启后保留。
 - **停止**：对话页运行中出现「停止」按钮，调用 agent.cancel（等价主对话停止）。
-- **问答通道接入**：侧对话调用 `ask_user_question` 时，面板直接渲染交互卡片（问题/说明/选项/自定义输入/提交），走 DSH 的 `userQuestions.continued()` 读待答问题、`userQuestions.answer()` 提交（内部 steer `user-question-reply`），不再只是"看得见不能答"。
+- **问答通道接入**：侧对话调用 `ask_user_question` 时，插件作为 `user-questions/request` waterfall 的应答者认领问题（只认领侧 agent，主对话的请求原样 `next()`），面板渲染交互卡片（问题/说明/选项/自定义输入/提交），提交后 resolve `{answers}` 让工具继续；对已经超时转 pending 的问题仍走 `userQuestions.answer()` 续答。
 - **主对话状态提示**：会话标题栏的 ⤳ 按钮上显示运行中侧对话数量角标。
 - **视觉**：列表卡片化、气泡/输入区/步骤区排版与滚动条细化（由 Haiku 子代理完成，纯 CSS）。
 - **审查修复**：浮层面板 hook 顺序（改名 state 上移）、恢复并发只跑一次、恢复路由取 request/header 与 model/selection 中较新者、把回调总结只接受投递后新增的文本、rename 只接受字符串、`mainAgent.options` 缺失保护。
