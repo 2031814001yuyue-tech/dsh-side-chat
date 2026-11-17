@@ -70,13 +70,19 @@ const PANEL_CSS = `
 .dsh-sc-btn.primary:hover:not(:disabled){filter:brightness(1.08);color:var(--dsw-alias-label-on-color)}
 
 .dsh-sc-list{max-height:34%;overflow-y:auto;border-bottom:1px solid var(--dsw-alias-border-l1);padding:8px;display:flex;flex-direction:column;gap:2px;flex:none;scrollbar-width:thin}
-.dsh-sc-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent}
+.dsh-sc-item{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:10px;cursor:pointer;border:1px solid transparent;transition:background .12s ease,border-color .12s ease}
+.dsh-sc-item:hover{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l1)}
+.dsh-sc-item.sel{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+.dsh-sc-rename{flex:none;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:0;border-radius:6px;color:var(--dsw-alias-label-tertiary);font-size:12px;cursor:pointer;opacity:0;transition:opacity .12s ease,color .12s ease}
+.dsh-sc-item:hover .dsh-sc-rename{opacity:1}
+.dsh-sc-rename:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
+.dsh-sc-rename-input{flex:1;min-width:0;font:inherit;font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-brand-primary);border-radius:6px;padding:2px 6px;outline:none}
 .dsh-sc-item:hover{background:var(--dsw-alias-bg-layer-1)}
 .dsh-sc-item.sel{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1)}
 .dsh-sc-item-title{flex:1;min-width:0}
-.dsh-sc-item-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.dsh-sc-item-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;font-size:13px;color:var(--dsw-alias-label-primary)}
 .dsh-sc-item-tag{display:inline-block;margin-left:6px;padding:0 5px;border-radius:999px;font-size:10px;font-weight:400;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2)}
-.dsh-sc-item-preview{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11px;margin-top:2px}
+.dsh-sc-item-preview{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:11.5px;margin-top:3px}
 
 .dsh-sc-chip{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 8px}
 .dsh-sc-chip.error{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
@@ -90,7 +96,7 @@ const PANEL_CSS = `
 .dsh-sc-row.user{align-self:flex-end;align-items:flex-end}
 .dsh-sc-row.assistant{align-self:flex-start;align-items:flex-start}
 .dsh-sc-meta{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-secondary);margin-bottom:3px;padding:0 2px}
-.dsh-sc-bubble{padding:7px 11px;border-radius:10px;white-space:pre-wrap;word-break:break-word;line-height:1.5;font-size:13px}
+.dsh-sc-bubble{padding:8px 12px;border-radius:12px;max-width:94%;white-space:pre-wrap;word-break:break-word;line-height:1.5;font-size:13px}
 .dsh-sc-bubble pre{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:8px 10px;overflow-x:auto;font-size:12px;margin:6px 0;line-height:1.45}
 .dsh-sc-bubble code{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);background:var(--dsw-alias-bg-layer-1);border-radius:4px;padding:1px 4px;font-size:12px}
 .dsh-sc-bubble pre code{background:none;border:none;padding:0;font-size:12px}
@@ -638,6 +644,29 @@ return {
         ? (selected.selection && selected.selection.reasoningEffort) || defaultEffort || ''
         : nextEffort || defaultEffort || ''
 
+      // 改名：列表项上点 ✎ 进入内联编辑，回车/失焦提交，Esc 取消
+      const [renamingId, setRenamingId] = React.useState(null)
+      const [renameText, setRenameText] = React.useState('')
+      const startRename = (c) => {
+        setRenamingId(c.id)
+        setRenameText(typeof c.title === 'string'
+          ? c.title
+          : c.title && typeof c.title.title === 'string' ? c.title.title : '')
+      }
+      const commitRename = async (id) => {
+        const title = String(renameText || '').trim()
+        setRenamingId(null)
+        if (!title) return
+        try {
+          const res = await host.call('sidechat/rename', { mainSessionId: sessionId, id, title })
+          if (res && !res.ok) setNotice(res.error || '改名失败')
+          else setChats((prev) => prev.map((c) => (c.id === id ? Object.assign({}, c, { title: (res && res.title) || title }) : c)))
+          refreshState()
+        } catch (err) {
+          setNotice('改名失败：' + String(err))
+        }
+      }
+
       const createChat = async () => {
         if (!sessionId) {
           setNotice('请先打开一个会话')
@@ -901,16 +930,44 @@ return {
               },
             },
               React.createElement('div', { className: 'dsh-sc-item-title' },
-                React.createElement('span', { className: 'dsh-sc-item-name' },
-                  typeof c.title === 'string'
-                    ? c.title
-                    : c.title && typeof c.title === 'object' && typeof c.title.title === 'string'
-                      ? c.title.title
-                      : '侧对话',
-                  c.inheritMode
-                    ? React.createElement('span', { className: 'dsh-sc-item-tag' }, c.inheritMode === 'full' ? '继承·完整' : '继承·最近')
-                    : null,
-                ),
+                renamingId === c.id
+                  ? React.createElement('input', {
+                      className: 'dsh-sc-rename-input',
+                      value: renameText,
+                      autoFocus: true,
+                      onClick: (e) => e.stopPropagation(),
+                      onChange: (e) => setRenameText(e.target.value),
+                      onKeyDown: (e) => {
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                          e.stopPropagation()
+                          commitRename(c.id)
+                        } else if (e.key === 'Escape') {
+                          e.stopPropagation()
+                          setRenamingId(null)
+                        }
+                      },
+                      onBlur: () => commitRename(c.id),
+                    })
+                  : React.createElement('span', { className: 'dsh-sc-item-name' },
+                      typeof c.title === 'string'
+                        ? c.title
+                        : c.title && typeof c.title === 'object' && typeof c.title.title === 'string'
+                          ? c.title.title
+                          : '侧对话',
+                      c.inheritMode
+                        ? React.createElement('span', { className: 'dsh-sc-item-tag' }, c.inheritMode === 'full' ? '继承·完整' : '继承·最近')
+                        : null,
+                    ),
+                renamingId === c.id
+                  ? null
+                  : React.createElement('button', {
+                      className: 'dsh-sc-rename',
+                      title: '重命名这条侧对话',
+                      onClick: (e) => {
+                        e.stopPropagation()
+                        startRename(c)
+                      },
+                    }, '✎'),
                 React.createElement('span', { className: 'dsh-sc-item-preview' }, c.lastPreview || (c.status === 'running' ? '正在思考…' : '还没有消息')),
               ),
               chipOf(c),

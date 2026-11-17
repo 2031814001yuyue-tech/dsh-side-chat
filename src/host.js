@@ -423,6 +423,32 @@ function createSideChatService(services, config) {
     }
   }
 
+  /** 重命名：优先用会话标题服务的 rename（会 supersede 自动标题），否则直接写 session/title 事件。 */
+  async function rename(mainSessionId, sideId, title) {
+    await restoreFor(mainSessionId)
+    const entry = entryOf(mainSessionId, sideId)
+    if (!entry) return { ok: false, error: '未知侧对话' }
+    const next = String(title === undefined || title === null ? '' : title).replace(/\s+/g, ' ').trim().slice(0, 60)
+    if (!next) return { ok: false, error: '标题不能为空' }
+    const sideAgent = agents.get(entry.sessionId)
+    const session = sideAgent && sideAgent.session
+    if (!session) return { ok: false, error: '侧对话不在线' }
+    try {
+      const titles = services.sessionTitle
+      if (titles && typeof titles.rename === 'function') {
+        await titles.rename(session, next)
+      } else {
+        session.append('session/title', { title: next, messageSeqs: [], source: { kind: 'user' } })
+      }
+    } catch (err) {
+      return { ok: false, error: '改名失败：' + messageOf(err) }
+    }
+    entry.title = next
+    entry.updatedAt = Date.now()
+    bumpVersion()
+    return { ok: true, title: next }
+  }
+
   /** 侧对话花费：交给计费插件（dsh-cost-meter）的 costMeter 服务；缺失时返回 null。 */
   async function usage(mainSessionId, sideId) {
     await restoreFor(mainSessionId)
@@ -835,7 +861,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, modelCatalog, modelInfo, selectModel, usage, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -851,6 +877,8 @@ return {
       llm: ctx.get('llm'),
       // 可选：计费插件（dsh-cost-meter）暴露的服务，用它的 getSessionCost 读侧会话花费。
       costMeter: ctx.get('costMeter'),
+      // 可选：会话标题服务（重命名走它的 rename；缺失时直接写 session/title 事件）
+      sessionTitle: ctx.get('sessionTitle'),
     }
     const required = ['agents', 'sessions', 'sessionQuery', 'commands']
     // workspaceRegistry（dsh-workspace）在 web profile 的 host 平面通常存在；
@@ -917,6 +945,13 @@ return {
       const sideId = strArg(args, 'id')
       if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
       return sideChat.bringBack(mainSessionId, sideId)
+    })
+    // 重命名侧对话（写 session/title，重启恢复后标题仍然是新的）
+    registerRpc('sidechat/rename', (args) => {
+      const mainSessionId = strArg(args, 'mainSessionId')
+      const sideId = strArg(args, 'id')
+      if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
+      return sideChat.rename(mainSessionId, sideId, args && args.title)
     })
     // 侧对话花费（依赖计费插件；缺失时返回 usage: null）
     registerRpc('sidechat/usage', (args) => {
