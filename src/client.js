@@ -391,6 +391,8 @@ return {
       const [nextEffort, setNextEffort] = React.useState('')
       // 选中侧对话的花费（来自计费插件，取不到时为 null）
       const [usage, setUsage] = React.useState(null)
+      // 当前模型信息（reasoning 档位等，按需从宿主精确查询）
+      const [modelInfo, setModelInfo] = React.useState(null)
       const msgBoxRef = React.useRef(null)
       const [width, setWidth] = React.useState(380)
       const [dragging, setDragging] = React.useState(false)
@@ -499,6 +501,23 @@ return {
         }
       }, [messages, selectedId, isOpen, isMinimized])
 
+      // 模型精确信息：只在生效模型变化时查一次
+      const infoChat = chats.find((c) => c.id === selectedId) || null
+      const routeSelectionForInfo = infoChat ? infoChat.selection : parseSelection(nextSelection)
+      const infoProvider = routeSelectionForInfo && routeSelectionForInfo.provider
+      const infoModel = routeSelectionForInfo && routeSelectionForInfo.model
+      React.useEffect(() => {
+        if (!infoProvider || !infoModel) {
+          setModelInfo(null)
+          return undefined
+        }
+        let alive = true
+        host.call('sidechat/model-info', { provider: infoProvider, model: infoModel })
+          .then((res) => { if (alive) setModelInfo(res && res.ok ? res.info : null) })
+          .catch(() => { if (alive) setModelInfo(null) })
+        return () => { alive = false }
+      }, [infoProvider, infoModel])
+
       // 花费：选中对话或消息更新时问一次计费插件（拿不到就隐藏）
       const lastMessageTime = messages.length ? messages[messages.length - 1].time : 0
       React.useEffect(() => {
@@ -544,17 +563,12 @@ return {
 
       const selected = chats.find((c) => c.id === selectedId) || null
 
-      // 当前生效模型（选中对话 / 新建默认）与它的推理强度选项
-      const modelMeta = new Map()
-      for (const group of models) {
-        for (const model of group.models) modelMeta.set(group.provider + '::' + model.id, model)
-      }
+      // 当前生效模型（选中对话 / 新建默认）。effort 档位要按模型精确查询，目录里只有名字。
       const routeKey = selected ? keyOfSelection(selected.selection) : nextSelection
-      const routeModel = routeKey ? modelMeta.get(routeKey) : undefined
-      const efforts = routeModel && routeModel.reasoning && Array.isArray(routeModel.reasoning.efforts)
-        ? routeModel.reasoning.efforts
+      const efforts = modelInfo && modelInfo.reasoning && Array.isArray(modelInfo.reasoning.efforts)
+        ? modelInfo.reasoning.efforts
         : []
-      const defaultEffort = routeModel && routeModel.reasoning ? routeModel.reasoning.defaultEffort : undefined
+      const defaultEffort = modelInfo && modelInfo.reasoning ? modelInfo.reasoning.defaultEffort : undefined
       const effortValue = selected
         ? (selected.selection && selected.selection.reasoningEffort) || defaultEffort || ''
         : nextEffort || defaultEffort || ''

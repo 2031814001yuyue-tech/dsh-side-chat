@@ -130,6 +130,29 @@ function createSideChatService(services, config) {
     return { ok: true, providers }
   }
 
+  /** 单个模型的精确信息（含 reasoning 档位）：目录里只有名字，effort 必须按模型精确查询。 */
+  async function modelInfo(provider, model) {
+    const llm = services.llm
+    if (!llm || typeof llm.resolveModelInfo !== 'function' || !provider || !model) {
+      return { ok: true, info: null }
+    }
+    try {
+      const info = await llm.resolveModelInfo(provider, model)
+      if (!info) return { ok: true, info: null }
+      return {
+        ok: true,
+        info: {
+          provider: info.provider || provider,
+          id: info.id || model,
+          reasoning: info.reasoning || null,
+          ...info.contextWindow === undefined ? {} : { contextWindow: info.contextWindow },
+        },
+      }
+    } catch (err) {
+      return { ok: false, error: '读取模型信息失败：' + messageOf(err) }
+    }
+  }
+
   /** 切换一条侧对话的模型：校验可用后写入该侧会话的 model/selection 事件。 */
   async function selectModel(mainSessionId, sideId, selection) {
     const entry = entryOf(mainSessionId, sideId)
@@ -600,7 +623,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, modelCatalog, selectModel, usage, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, modelCatalog, modelInfo, selectModel, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -643,6 +666,13 @@ return {
     })
     // 可切换的模型目录（按 provider 分组；服务缺失时返回空列表）
     registerRpc('sidechat/models', () => sideChat.modelCatalog())
+    // 精确模型信息（推理强度档位等）：只对当前生效模型按需查询
+    registerRpc('sidechat/model-info', (args) => {
+      const provider = strArg(args, 'provider')
+      const model = strArg(args, 'model')
+      if (!provider || !model) return { ok: false, error: '参数缺失' }
+      return sideChat.modelInfo(provider, model)
+    })
     // 切换某条侧对话的模型（写入该侧会话的 model/selection，下一轮生效）
     registerRpc('sidechat/select-model', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')

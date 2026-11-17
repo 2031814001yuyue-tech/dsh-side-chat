@@ -8,7 +8,7 @@
 - **模型切换**：新增 `sidechat/models`、`sidechat/select-model` RPC 与面板下拉；默认继承主对话模型，切换时写入该侧会话的 `model/selection`（下一轮生效），切换前用 `llm.resolveCallConfig` 校验可用性。
 - **上下文继承**：新增「独立 / 继承最近 / 继承完整」三档。继承只复制主对话中用户与助手的文字（最近 ≤20 条 / ≤2 万字，或全部），不含工具调用与工具输出；主对话无已完成回合时自动退回独立上下文。
 - **修复**：注入消息的来源改用生产者自身 kind（v4 会话格式拒绝 `kind:'plugin'`，此前继承上下文与「带回主对话」注入会报 `format v4 message requires a producer-owned source kind`）。
-- **推理强度可选**：面板新增 effort 下拉（模型目录里声明的档位），切换时连带模型一起写入 `model/selection`，下一轮生效；新建时也可预先选好。
+- **推理强度可选**：面板新增 effort 下拉（档位通过新增的 sidechat/model-info RPC 按模型精确查询——llm.listModels 只给名字，不含 reasoning 元数据），切换时连带模型一起写入 `model/selection`，下一轮生效；新建时也可预先选好。
 - **思考过程可见**：侧对话消息里带上 DSH 的 `reasoning` 块，面板以可折叠的「思考过程」显示（此前只取 `text` 块，思考被丢弃）。
 - **费用可见**：新增 `sidechat/usage` RPC，调用计费插件 `dsh-cost-meter` 暴露的 `costMeter.getSessionCost()`，在面板底部显示该侧对话的费用 / 缓存 / 输入 / 输出 token；计费插件缺失时自动隐藏。
 - **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 9 条（新增 models / select-model / usage）。
