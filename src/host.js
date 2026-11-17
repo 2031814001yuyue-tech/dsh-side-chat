@@ -87,8 +87,9 @@ function createSideChatService(services, config) {
    * 第一次问某个主会话时，扫描持久化清单，把它的侧会话逐个 agents.resume 回来，
    * 重新挂进面板并再次归档（不污染会话列表）。失败的单条只记日志，不影响其它。
    */
-  async function restoreFor(mainSessionId) {
+  async function restoreFor(mainSessionId, exclude = []) {
     if (!mainSessionId || restoredFor.has(mainSessionId)) return
+    const excluded = new Set(exclude.filter((id) => typeof id === 'string'))
     let records = []
     try {
       if (Date.now() - corpusCache.at > 30000) {
@@ -119,6 +120,7 @@ function createSideChatService(services, config) {
           snapshot = undefined
         }
         const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events : []
+        if (excluded.has(id)) continue
         // 路由：优先最近一次 request/header；只有 model/selection 没跑过请求的会话回退到它
         let resumeOptions
         let recordedSelection
@@ -608,8 +610,8 @@ function createSideChatService(services, config) {
   }
 
   /** 面板轮询状态：侧对话列表 + 版本 + 自动开面板信号。 */
-  async function state(mainSessionId) {
-    await restoreFor(mainSessionId)
+  async function state(mainSessionId, exclude) {
+    await restoreFor(mainSessionId, exclude)
     const chats = []
     for (const entry of sideChats.values()) {
       if (entry.mainSessionId !== mainSessionId) continue
@@ -736,22 +738,25 @@ function createSideChatService(services, config) {
   }
 
   /** 关闭侧对话：停止 agent、归档会话、移出注册表。 */
+  /** 归档一条侧对话：按 DSH 的归档逻辑（停止活动 + 进归档集合）。
+   *  先落一条 plugin 记录，重启恢复时据此跳过（不会再被拉回面板），
+   *  但会话仍留在 DSH 的归档列表里（和归档普通会话一样可找回/取消归档）。 */
   async function close(mainSessionId, sideId) {
     await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     sideChats.delete(sideId)
-    try {
-      await entry.handle.dispose()
-    } catch (err) {
-      console.error('[side-chat] dispose 失败', err)
-    }
     if (workspaceRegistry) {
       try {
-        await workspaceRegistry.archiveSession(entry.sessionId)
+        await workspaceRegistry.archiveSession(entry.sessionId, { stopActivity: true })
       } catch (err) {
         console.error('[side-chat] 归档失败', err)
       }
+    }
+    try {
+      await entry.handle.dispose()
+    } catch (err) {
+      // 归档已停掉活动时 dispose 可能已无效，忽略
     }
     bumpVersion()
     return { ok: true }
@@ -853,7 +858,9 @@ return {
     registerRpc('sidechat/state', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')
       if (!mainSessionId) return { ok: false, error: '缺少主会话 ID' }
-      return sideChat.state(mainSessionId)
+      // exclude：客户端记录的「已归档」侧会话 id，重启恢复时跳过
+      const exclude = Array.isArray(args && args.exclude) ? args.exclude.slice(0, 400) : []
+      return sideChat.state(mainSessionId, exclude)
     })
     registerRpc('sidechat/events', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')

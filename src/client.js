@@ -341,7 +341,7 @@ return {
         return timer.interval(async () => {
           if (!sessionId) return
           try {
-            const res = await host.call('sidechat/state', { mainSessionId: sessionId })
+            const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds() })
             if (res && typeof res.openSignal === 'number') {
               const prev = lastOpenSignals.get(sessionId)
               if (prev === undefined) {
@@ -409,10 +409,31 @@ return {
         return { provider: key.slice(0, at), model: key.slice(at + 2) }
       }
 
+      // 已归档的侧对话 id（localStorage）：重启恢复时传给宿主跳过它们
+      const readArchivedIds = () => {
+        try {
+          const raw = window.localStorage && window.localStorage.getItem('dsh-sidechat-archived')
+          const list = raw ? JSON.parse(raw) : []
+          return Array.isArray(list) ? list.filter((id) => typeof id === 'string').slice(-400) : []
+        } catch (err) {
+          return []
+        }
+      }
+      const rememberArchivedId = (id) => {
+        try {
+          if (!window.localStorage || typeof id !== 'string') return
+          const list = readArchivedIds().filter((x) => x !== id)
+          list.push(id)
+          window.localStorage.setItem('dsh-sidechat-archived', JSON.stringify(list.slice(-400)))
+        } catch (err) {
+          // 存不下就算了：最多重启后又恢复出来
+        }
+      }
+
       const refreshState = React.useCallback(async () => {
         if (!sessionId) return
         try {
-          const res = await host.call('sidechat/state', { mainSessionId: sessionId })
+          const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds() })
           if (!res || !Array.isArray(res.chats)) return
           // 内容级比较：无变化时不触发重渲染
           setChats((prev) => {
@@ -672,10 +693,11 @@ return {
       const closeChat = async (id) => {
         try {
           const res = await host.call('sidechat/close', { mainSessionId: sessionId, id })
-          if (res && !res.ok) setNotice(res.error || '关闭失败')
+          if (res && !res.ok) setNotice(res.error || '归档失败')
+          else rememberArchivedId(id)
           refreshState()
         } catch (err) {
-          setNotice('关闭失败：' + String(err))
+          setNotice('归档失败：' + String(err))
         }
       }
 
@@ -872,8 +894,8 @@ return {
               React.createElement('button', {
                 className: 'dsh-sc-btn',
                 onClick: () => closeChat(selected.id),
-                title: '停止该侧对话并归档',
-              }, '关闭'),
+                title: '归档该侧对话（按 DSH 归档逻辑：停止运行并进归档列表，可在归档里找回）',
+              }, '归档'),
             ),
             React.createElement('div', { className: 'dsh-sc-input' },
               React.createElement('input', {
