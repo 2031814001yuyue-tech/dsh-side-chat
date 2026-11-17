@@ -679,7 +679,51 @@ function createSideChatService(services, config) {
       entry.updatedAt = messages[messages.length - 1].time
       entry.lastPreview = previewOf(messages[messages.length - 1].text)
     }
-    return { ok: true, messages }
+    // 逐步骤进度（伪流式）：DSH 没有 token 级增量事件，但会话日志会按 step 落
+    // assistant/message(reasoning+tool-call) / tool/result，把这些抽成 trace，
+    // 面板 1s 轮询就能看到「思考 → 调工具 → 结果 → 下一步」逐步出现。
+    const allEvents = snap && Array.isArray(snap.events) ? snap.events : []
+    let turnStart = -1
+    for (let i = allEvents.length - 1; i >= 0; i -= 1) {
+      const event = allEvents[i]
+      const source = event && event.type === 'user/message' ? event.data && event.data.source : undefined
+      if (source && source.kind === 'user') {
+        turnStart = i
+        break
+      }
+    }
+    const trace = []
+    for (let i = Math.max(0, turnStart + 1); i < allEvents.length; i += 1) {
+      const event = allEvents[i]
+      if (!event) continue
+      if (event.type === 'turn/end') {
+        trace.length = 0
+        continue
+      }
+      if (event.type === 'assistant/message') {
+        const content = event.data && event.data.message && Array.isArray(event.data.message.content)
+          ? event.data.message.content
+          : []
+        for (const block of content) {
+          if (!block) continue
+          if (block.type === 'reasoning' && typeof block.text === 'string' && block.text.trim()) {
+            trace.push({ kind: 'thinking', text: block.text.trim().slice(0, 240), time: event.time })
+          } else if (block.type === 'tool-call') {
+            const name = block.name || (block.tool && block.tool.name) || '工具'
+            trace.push({ kind: 'tool', text: String(name), time: event.time })
+          }
+        }
+      } else if (event.type === 'tool/result') {
+        const text = textOf(event.data && event.data.message && event.data.message.content).trim()
+        if (text) trace.push({ kind: 'result', text: text.slice(0, 300), time: event.time })
+      }
+    }
+    return {
+      ok: true,
+      messages,
+      trace: trace.slice(-12),
+      running: entry.status === 'running' || entry.bringingBack === true,
+    }
   }
 
   /** 带回主对话：侧 agent 自总结 → notice 折叠行注入主会话（不唤醒主 agent）。 */

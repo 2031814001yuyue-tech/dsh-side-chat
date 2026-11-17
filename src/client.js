@@ -46,6 +46,15 @@ const PANEL_CSS = `
 .dsh-sc-think{margin:2px 0 6px;border-left:2px solid var(--dsw-alias-border-l2);padding-left:8px}
 .dsh-sc-think summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px;outline:none}
 .dsh-sc-think-body{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:pre-wrap;line-height:1.5;max-height:240px;overflow-y:auto}
+.dsh-sc-trace{margin:4px 0 10px;border-left:2px solid var(--dsw-alias-border-l2);padding:4px 0 4px 8px;display:flex;flex-direction:column;gap:3px}
+.dsh-sc-trace-head{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dsh-sc-trace-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}
+.dsh-sc-trace-dot.running{background:var(--dsw-alias-label-on-color,#4b8bf5);animation:dsh-sc-pulse 1.2s ease-in-out infinite}
+@keyframes dsh-sc-pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.dsh-sc-trace-row{display:flex;gap:6px;font-size:12px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
+.dsh-sc-trace-kind{flex:none;color:var(--dsw-alias-label-tertiary)}
+.dsh-sc-trace-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-sc-trace-row.result .dsh-sc-trace-text{color:var(--dsw-alias-label-tertiary)}
 .dsh-sc-usage{display:flex;gap:10px;justify-content:flex-end;font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
 .dsh-sc-select{flex:none;max-width:120px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:3px 6px;font-size:12px;cursor:pointer;outline:none}
 .dsh-sc-select:focus{border-color:var(--dsw-alias-brand-primary)}
@@ -393,6 +402,9 @@ return {
       const [usage, setUsage] = React.useState(null)
       // 当前模型信息（reasoning 档位等，按需从宿主精确查询）
       const [modelInfo, setModelInfo] = React.useState(null)
+      // 运行中回合的逐步骤进度（伪流式：思考/工具/结果，宿主按会话事件抽取）
+      const [trace, setTrace] = React.useState([])
+      const [running, setRunning] = React.useState(false)
       const msgBoxRef = React.useRef(null)
       const [width, setWidth] = React.useState(380)
       const [dragging, setDragging] = React.useState(false)
@@ -461,6 +473,10 @@ return {
         try {
           const res = await host.call('sidechat/events', { mainSessionId: sessionId, id: selectedId })
           if (res && res.ok && Array.isArray(res.messages)) setMessages(res.messages)
+          if (res && res.ok) {
+            setTrace(Array.isArray(res.trace) ? res.trace : [])
+            setRunning(res.running === true)
+          }
         } catch (err) {
           console.error('[side-chat] events 失败', err)
         }
@@ -843,8 +859,26 @@ return {
             )),
       )
 
+      const traceBox = running || trace.length
+        ? React.createElement('div', { className: 'dsh-sc-trace' },
+            React.createElement('div', { className: 'dsh-sc-trace-head' },
+              running ? React.createElement('span', { className: 'dsh-sc-trace-dot running' }) : null,
+              running ? '运行中…' : '本轮步骤',
+            ),
+            trace.slice(-8).map((row, index) => React.createElement('div', {
+              key: index,
+              className: 'dsh-sc-trace-row ' + (row && row.kind ? row.kind : 'text'),
+            },
+              React.createElement('span', { className: 'dsh-sc-trace-kind' },
+                row && row.kind === 'thinking' ? '思考' : row && row.kind === 'tool' ? '工具' : '结果'),
+              React.createElement('span', { className: 'dsh-sc-trace-text' }, String((row && row.text) || '')),
+            )),
+          )
+        : null
+
       const body = selected
         ? React.createElement('div', { ref: msgBoxRef, className: 'dsh-sc-msg' },
+            traceBox,
             renderedMessages.length === 0
               ? React.createElement('div', { className: 'dsh-sc-empty' }, '还没有消息\n发一句话开始这段并行对话')
               : renderedMessages.map((m, index) => React.createElement('div', {
