@@ -415,6 +415,8 @@ return {
       const [running, setRunning] = React.useState(false)
       // 列表页 / 对话页：默认列表，点某条进入对话（返回即列表）
       const [view, setView] = React.useState('list')
+      // 刚新建、state 还没轮询到的对话 id（避免被「选中项不存在」的保护逻辑弹回列表）
+      const [pendingChatId, setPendingChatId] = React.useState(null)
       // 折叠：逐条消息手动折叠（超长消息默认折叠）+ 步骤区折叠
       const [collapsedMsgs, setCollapsedMsgs] = React.useState({})
       const [traceCollapsed, setTraceCollapsed] = React.useState(false)
@@ -549,11 +551,19 @@ return {
         }
       }, [messages, selectedId, isOpen, isMinimized])
 
-      // 对话页但选中项已消失（被归档/关闭）时退回列表
+      // 对话页但选中项已消失（被归档/关闭）时退回列表；刚新建、状态还没刷新到的 id 先放行
       React.useEffect(() => {
         if (view !== 'chat') return
-        if (!selectedId || !chats.some((c) => c.id === selectedId)) setView('list')
-      }, [view, selectedId, chats])
+        if (!selectedId) {
+          setView('list')
+          return
+        }
+        if (chats.some((c) => c.id === selectedId)) {
+          if (pendingChatId === selectedId) setPendingChatId(null)
+          return
+        }
+        if (pendingChatId !== selectedId) setView('list')
+      }, [view, selectedId, chats, pendingChatId])
 
       // 模型精确信息：只在生效模型变化时查一次
       const infoChat = chats.find((c) => c.id === selectedId) || null
@@ -643,6 +653,7 @@ return {
             inherit: nextInherit === 'none' ? undefined : nextInherit,
           })
           if (res && res.ok) {
+            setPendingChatId(res.id)
             setSelectedId(res.id)
             setView('chat')
             if (res.notice) setNotice(res.notice)
