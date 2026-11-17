@@ -241,6 +241,35 @@ function createSideChatService(services, config) {
     }
   }
 
+  /** 侧对话花费：交给计费插件（dsh-cost-meter）的 costMeter 服务；缺失时返回 null。 */
+  async function usage(mainSessionId, sideId) {
+    const entry = entryOf(mainSessionId, sideId)
+    if (!entry) return { ok: false, error: '未知侧对话' }
+    const costMeter = services.costMeter
+    if (!costMeter || typeof costMeter.getSessionCost !== 'function') return { ok: true, usage: null }
+    let raw
+    try {
+      raw = await costMeter.getSessionCost(entry.sessionId)
+    } catch (err) {
+      return { ok: false, error: '读取费用失败：' + messageOf(err) }
+    }
+    const own = raw && typeof raw === 'object' ? raw.own : undefined
+    if (!own || typeof own !== 'object') return { ok: true, usage: null }
+    const pick = (key) => (typeof own[key] === 'number' ? own[key] : undefined)
+    return {
+      ok: true,
+      usage: {
+        costCny: pick('costCny'),
+        cost: pick('cost'),
+        input: pick('input'),
+        output: pick('output'),
+        cacheRead: pick('cacheRead'),
+        cacheWrite: pick('cacheWrite'),
+        calls: pick('calls'),
+      },
+    }
+  }
+
   /** 创建一条侧对话：真实 agent 会话，继承主会话组合；模型默认继承主会话，也可指定。
    *  inherit = 'recent' | 'full'（或 true）时，把主对话的对话文字作为背景注入；
    *  工具调用不继承。 */
@@ -442,8 +471,22 @@ function createSideChatService(services, config) {
         if (text) messages.push({ role: 'user', text, time: event.time })
       } else if (event.type === 'assistant/message') {
         const message = event.data && event.data.message
-        const text = textOf(message && message.content).trim()
-        if (text) messages.push({ role: 'assistant', text, time: event.time })
+        const content = message && Array.isArray(message.content) ? message.content : []
+        const text = textOf(content).trim()
+        // 思考过程：DSH 的 reasoning 块（主对话里可折叠显示，这里同样带出去）
+        const thinking = content
+          .filter((block) => block && block.type === 'reasoning' && typeof block.text === 'string')
+          .map((block) => block.text)
+          .join('\n\n')
+          .trim()
+        if (text || thinking) {
+          messages.push({
+            role: 'assistant',
+            text,
+            ...thinking ? { thinking } : {},
+            time: event.time,
+          })
+        }
       }
     }
     if (messages.length) {
@@ -557,7 +600,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, modelCatalog, selectModel, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, modelCatalog, selectModel, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -571,6 +614,8 @@ return {
       agentPresets: ctx.get('agentPresets'),
       // 可选：模型目录（换模型用）。缺失时面板不显示模型选择器。
       llm: ctx.get('llm'),
+      // 可选：计费插件（dsh-cost-meter）暴露的服务，用它的 getSessionCost 读侧会话花费。
+      costMeter: ctx.get('costMeter'),
     }
     const required = ['agents', 'sessions', 'sessionQuery', 'commands']
     // workspaceRegistry（dsh-workspace）在 web profile 的 host 平面通常存在；
@@ -628,6 +673,13 @@ return {
       const sideId = strArg(args, 'id')
       if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
       return sideChat.bringBack(mainSessionId, sideId)
+    })
+    // 侧对话花费（依赖计费插件；缺失时返回 usage: null）
+    registerRpc('sidechat/usage', (args) => {
+      const mainSessionId = strArg(args, 'mainSessionId')
+      const sideId = strArg(args, 'id')
+      if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
+      return sideChat.usage(mainSessionId, sideId)
     })
     registerRpc('sidechat/close', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')

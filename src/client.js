@@ -42,6 +42,11 @@ const PANEL_CSS = `
 .dsh-sc-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
 .dsh-sc-btn:disabled{opacity:.45;cursor:default}
 .dsh-sc-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.dsh-sc-select-effort{max-width:92px}
+.dsh-sc-think{margin:2px 0 6px;border-left:2px solid var(--dsw-alias-border-l2);padding-left:8px}
+.dsh-sc-think summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px;outline:none}
+.dsh-sc-think-body{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:pre-wrap;line-height:1.5;max-height:240px;overflow-y:auto}
+.dsh-sc-usage{display:flex;gap:10px;justify-content:flex-end;font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
 .dsh-sc-select{flex:none;max-width:120px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:3px 6px;font-size:12px;cursor:pointer;outline:none}
 .dsh-sc-select:focus{border-color:var(--dsw-alias-brand-primary)}
 .dsh-sc-btn.primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color)}
@@ -382,6 +387,10 @@ return {
       const [nextSelection, setNextSelection] = React.useState('')
       // 新建侧对话的上下文来源：none（独立）| recent（最近若干轮）| full（全部对话文字）
       const [nextInherit, setNextInherit] = React.useState('none')
+      // 新建时选定的推理强度（空 = 跟随模型默认）
+      const [nextEffort, setNextEffort] = React.useState('')
+      // 选中侧对话的花费（来自计费插件，取不到时为 null）
+      const [usage, setUsage] = React.useState(null)
       const msgBoxRef = React.useRef(null)
       const [width, setWidth] = React.useState(380)
       const [dragging, setDragging] = React.useState(false)
@@ -490,9 +499,28 @@ return {
         }
       }, [messages, selectedId, isOpen, isMinimized])
 
+      // 花费：选中对话或消息更新时问一次计费插件（拿不到就隐藏）
+      const lastMessageTime = messages.length ? messages[messages.length - 1].time : 0
+      React.useEffect(() => {
+        if (!sessionId || !selectedId) {
+          setUsage(null)
+          return undefined
+        }
+        let alive = true
+        host.call('sidechat/usage', { mainSessionId: sessionId, id: selectedId })
+          .then((res) => { if (alive) setUsage(res && res.ok ? res.usage : null) })
+          .catch(() => { if (alive) setUsage(null) })
+        return () => { alive = false }
+      }, [sessionId, selectedId, lastMessageTime])
+
       // Markdown 渲染（仅在消息变化时解析；B5 修复：key 用消息索引）
       const renderedMessages = React.useMemo(
-        () => messages.map((m, index) => ({ role: m.role, time: m.time, blocks: markdown.renderMarkdown(m.text, 'm' + index + '_') })),
+        () => messages.map((m, index) => ({
+          role: m.role,
+          time: m.time,
+          thinking: m.thinking || '',
+          blocks: markdown.renderMarkdown(m.text, 'm' + index + '_'),
+        })),
         [messages],
       )
 
@@ -516,6 +544,21 @@ return {
 
       const selected = chats.find((c) => c.id === selectedId) || null
 
+      // 当前生效模型（选中对话 / 新建默认）与它的推理强度选项
+      const modelMeta = new Map()
+      for (const group of models) {
+        for (const model of group.models) modelMeta.set(group.provider + '::' + model.id, model)
+      }
+      const routeKey = selected ? keyOfSelection(selected.selection) : nextSelection
+      const routeModel = routeKey ? modelMeta.get(routeKey) : undefined
+      const efforts = routeModel && routeModel.reasoning && Array.isArray(routeModel.reasoning.efforts)
+        ? routeModel.reasoning.efforts
+        : []
+      const defaultEffort = routeModel && routeModel.reasoning ? routeModel.reasoning.defaultEffort : undefined
+      const effortValue = selected
+        ? (selected.selection && selected.selection.reasoningEffort) || defaultEffort || ''
+        : nextEffort || defaultEffort || ''
+
       const createChat = async () => {
         if (!sessionId) {
           setNotice('请先打开一个会话')
@@ -524,6 +567,7 @@ return {
         setNotice('')
         try {
           const chosen = parseSelection(nextSelection)
+          if (chosen && nextEffort) chosen.reasoningEffort = nextEffort
           const res = await host.call('sidechat/open', {
             mainSessionId: sessionId,
             selection: chosen,
@@ -541,7 +585,19 @@ return {
         }
       }
 
-      // 换模型：有选中的侧对话就切它（下一轮生效），没有就只记下一条新建用的模型
+      // 切换选中侧对话的模型路由（provider/model/effort 一起写，下一轮生效）
+      const applyRoute = async (selection, what) => {
+        setNotice('正在切换' + what + '…')
+        try {
+          const res = await host.call('sidechat/select-model', { mainSessionId: sessionId, id: selected.id, selection })
+          if (res && res.ok) setNotice('已切换' + what + '，下一轮生效')
+          else setNotice((res && res.error) || ('切换' + what + '失败'))
+          refreshState()
+        } catch (err) {
+          setNotice('切换' + what + '失败：' + String(err))
+        }
+      }
+      // 换模型：有选中的侧对话就切它，没有就只记下一条新建用的模型
       const pickModel = async (key) => {
         if (!selected) {
           setNextSelection(key)
@@ -549,15 +605,19 @@ return {
         }
         const selection = parseSelection(key)
         if (!selection) return
-        setNotice('正在切换模型…')
-        try {
-          const res = await host.call('sidechat/select-model', { mainSessionId: sessionId, id: selected.id, selection })
-          if (res && res.ok) setNotice('已切换模型，下一轮生效')
-          else setNotice((res && res.error) || '切换模型失败')
-          refreshState()
-        } catch (err) {
-          setNotice('切换模型失败：' + String(err))
+        if (effortValue) selection.reasoningEffort = effortValue
+        await applyRoute(selection, '模型')
+      }
+      // 换推理强度：同样作用于选中对话；没有选中时记给下一条新建
+      const pickEffort = async (effort) => {
+        if (!selected) {
+          setNextEffort(effort)
+          return
         }
+        const selection = parseSelection(keyOfSelection(selected.selection))
+        if (!selection) return
+        if (effort) selection.reasoningEffort = effort
+        await applyRoute(selection, '推理强度')
       }
 
       const send = async () => {
@@ -680,6 +740,15 @@ return {
           group.models.map((model) => React.createElement('option', { key: group.provider + '::' + model.id, value: group.provider + '::' + model.id }, model.name)))),
       )
 
+      // 推理强度：只在该模型声明了 effort 档位时出现
+      const effortPicker = efforts.length === 0 ? null : React.createElement('select', {
+        className: 'dsh-sc-select dsh-sc-select-effort',
+        'aria-label': '推理强度',
+        title: selected ? '该侧对话的推理强度（切换后下一轮生效）' : '新建侧对话的推理强度',
+        value: effortValue,
+        onChange: (e) => pickEffort(e.target.value),
+      }, efforts.map((effort) => React.createElement('option', { key: effort.id, value: effort.id }, effort.name || effort.id)))
+
       // 右侧栏里 tab 条已经写着「侧边对话」，正文头不再重复标题，只留一行说明 + 新建。
       const head = React.createElement('div', { className: 'dsh-sc-head' },
         inline
@@ -692,6 +761,7 @@ return {
             ),
         inheritPicker,
         picker,
+        effortPicker,
         React.createElement('button', { className: 'dsh-sc-btn primary', onClick: createChat }, '＋ 新建'),
         inline ? null : React.createElement('button', {
           className: 'dsh-sc-btn',
@@ -745,14 +815,35 @@ return {
                     React.createElement('span', null, m.role === 'user' ? '你' : '侧对话助手'),
                     React.createElement('span', null, timeOf(m.time)),
                   ),
-                  React.createElement('div', { className: 'dsh-sc-bubble' }, m.blocks),
+                  React.createElement('div', { className: 'dsh-sc-bubble' },
+                    m.thinking
+                      ? React.createElement('details', { className: 'dsh-sc-think' },
+                          React.createElement('summary', null, '思考过程'),
+                          React.createElement('div', { className: 'dsh-sc-think-body' }, m.thinking),
+                        )
+                      : null,
+                    m.blocks,
+                  ),
                 )),
           )
         : React.createElement('div', { className: 'dsh-sc-msg' },
             React.createElement('div', { className: 'dsh-sc-empty' }, '从上方列表选择一条侧对话\n或点击「＋ 新建」开一条新的'))
 
+      const formatTokens = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n))
+      const usageLine = usage && (usage.costCny !== undefined || usage.input !== undefined)
+        ? React.createElement('div', { className: 'dsh-sc-usage' },
+            usage.costCny !== undefined
+              ? React.createElement('span', null, '费用 ¥' + Number(usage.costCny).toFixed(4))
+              : null,
+            usage.cacheRead !== undefined ? React.createElement('span', null, '缓存 ' + formatTokens(usage.cacheRead)) : null,
+            usage.input !== undefined ? React.createElement('span', null, '入 ' + formatTokens(usage.input)) : null,
+            usage.output !== undefined ? React.createElement('span', null, '出 ' + formatTokens(usage.output)) : null,
+          )
+        : null
+
       const foot = selected
         ? React.createElement('div', { className: 'dsh-sc-foot' },
+            usageLine,
             React.createElement('div', { className: 'dsh-sc-actions' },
               React.createElement('button', {
                 className: 'dsh-sc-btn',

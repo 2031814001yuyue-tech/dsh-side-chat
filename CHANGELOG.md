@@ -8,7 +8,10 @@
 - **模型切换**：新增 `sidechat/models`、`sidechat/select-model` RPC 与面板下拉；默认继承主对话模型，切换时写入该侧会话的 `model/selection`（下一轮生效），切换前用 `llm.resolveCallConfig` 校验可用性。
 - **上下文继承**：新增「独立 / 继承最近 / 继承完整」三档。继承只复制主对话中用户与助手的文字（最近 ≤20 条 / ≤2 万字，或全部），不含工具调用与工具输出；主对话无已完成回合时自动退回独立上下文。
 - **修复**：注入消息的来源改用生产者自身 kind（v4 会话格式拒绝 `kind:'plugin'`，此前继承上下文与「带回主对话」注入会报 `format v4 message requires a producer-owned source kind`）。
-- **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 8 条（新增 models / select-model）。
+- **推理强度可选**：面板新增 effort 下拉（模型目录里声明的档位），切换时连带模型一起写入 `model/selection`，下一轮生效；新建时也可预先选好。
+- **思考过程可见**：侧对话消息里带上 DSH 的 `reasoning` 块，面板以可折叠的「思考过程」显示（此前只取 `text` 块，思考被丢弃）。
+- **费用可见**：新增 `sidechat/usage` RPC，调用计费插件 `dsh-cost-meter` 暴露的 `costMeter.getSessionCost()`，在面板底部显示该侧对话的费用 / 缓存 / 输入 / 输出 token；计费插件缺失时自动隐藏。
+- **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 9 条（新增 models / select-model / usage）。
 - **review 修复**：① 主会话依赖默认路由（`options` 里没有 provider/model、`model.current()` 也拿不到完整选择）时不再解构 `initialSelection` 抛错，改为把这两个字段留空交给 `agents.create` 的默认值；② 「继承最近」的单条消息也受 2 万字预算约束（先截断再入列），避免一条超长回复撑破上限；③ 新建时的上下文选择器改为常显（只影响下一条新建），不再因为已有侧对话被自动选中而消失。
 
 ## [0.1.2] - 2026-08-14
