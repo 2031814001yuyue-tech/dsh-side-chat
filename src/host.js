@@ -52,6 +52,11 @@ function createSideChatService(services, config) {
       .join('')
   }
 
+  /** 错误文本（服务层自己用一份；apply() 里也有一份给 RPC 用）。 */
+  function messageOf(err) {
+    return err && err.message ? String(err.message) : String(err)
+  }
+
   function previewOf(text) {
     const flat = String(text).replace(/\s+/g, ' ').trim()
     return flat.length > 60 ? flat.slice(0, 60) + '…' : flat
@@ -84,7 +89,6 @@ function createSideChatService(services, config) {
    */
   async function restoreFor(mainSessionId) {
     if (!mainSessionId || restoredFor.has(mainSessionId)) return
-    restoredFor.add(mainSessionId)
     let records = []
     try {
       if (Date.now() - corpusCache.at > 30000) {
@@ -96,9 +100,12 @@ function createSideChatService(services, config) {
         && typeof record.header.id === 'string'
         && record.header.id.indexOf('side-') === 0)
     } catch (err) {
+      // 列举失败不标记完成：清掉缓存，下一次轮询还会重试
       console.error('[side-chat] 列举持久化会话失败', err)
+      corpusCache = { at: 0, records: [] }
       return
     }
+    restoredFor.add(mainSessionId)
     for (const record of records) {
       const id = record.header.id
       if (sideChats.has(id)) continue
@@ -112,21 +119,34 @@ function createSideChatService(services, config) {
           snapshot = undefined
         }
         const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events : []
+        // 路由：优先最近一次 request/header；只有 model/selection 没跑过请求的会话回退到它
         let resumeOptions
-        for (let i = events.length - 1; i >= 0; i -= 1) {
+        let recordedSelection
+        for (let i = events.length - 1; i >= 0 && resumeOptions === undefined; i -= 1) {
           const event = events[i]
-          if (!event || event.type !== 'request/header') continue
-          const config = event.data && event.data.header && event.data.header.config
-          if (config && config.provider && config.model) {
-            resumeOptions = {
-              provider: config.provider,
-              model: config.model,
-              ...config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens },
-              ...config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
+          if (!event) continue
+          if (event.type === 'request/header') {
+            const config = event.data && event.data.header && event.data.header.config
+            if (config && config.provider && config.model) {
+              resumeOptions = {
+                provider: config.provider,
+                model: config.model,
+                ...config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens },
+                ...config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
+              }
+            }
+          } else if (event.type === 'model/selection' && recordedSelection === undefined) {
+            const selection = event.data
+            if (selection && selection.provider && selection.model) {
+              recordedSelection = {
+                provider: selection.provider,
+                model: selection.model,
+                ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
+              }
             }
           }
-          break
         }
+        if (resumeOptions === undefined) resumeOptions = recordedSelection
         const handle = await agents.resume({
           resumeSessionId: id,
           ...resumeOptions === undefined ? {} : { agentOptions: resumeOptions },
@@ -149,16 +169,29 @@ function createSideChatService(services, config) {
         } catch (err) {
           title = undefined
         }
-        // 继承档位没有单独持久化：从创建时注入的 notice 摘要反推
+        // 继承档位没有单独持久化：从创建时注入的 notice 摘要反推。
+        // 注意注入可能以 user/message 落盘，也可能在 agent/inbox/spliced 里（未消费的 inbox）。
         let inheritMode = null
         try {
-          const injected = (snapshot && Array.isArray(snapshot.events) ? snapshot.events : []).find((event) => event
-            && event.type === 'user/message'
-            && event.data && event.data.source
-            && event.data.source.kind === 'sidechat'
-            && typeof event.data.source.summary === 'string'
-            && event.data.source.summary.indexOf('继承自主对话的') === 0)
-          if (injected) inheritMode = injected.data.source.summary.indexOf('完整') >= 0 ? 'full' : 'recent'
+          const noticeText = (message) => {
+            const source = message && message.source
+            if (!source || source.kind !== 'sidechat') return undefined
+            if (typeof source.summary !== 'string' || source.summary.indexOf('继承自主对话的') !== 0) return undefined
+            return source.summary
+          }
+          for (const event of events) {
+            if (!event) continue
+            const candidates = event.type === 'user/message'
+              ? [event.data]
+              : event.type === 'agent/inbox/spliced' && event.data && Array.isArray(event.data.inserted)
+                ? event.data.inserted
+                : []
+            const notice = candidates.map(noticeText).find(Boolean)
+            if (notice) {
+              inheritMode = notice.indexOf('完整') >= 0 ? 'full' : 'recent'
+              break
+            }
+          }
         } catch (err) {
           inheritMode = null
         }
