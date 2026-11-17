@@ -62,6 +62,30 @@ function createSideChatService(services, config) {
     return flat.length > 60 ? flat.slice(0, 60) + '…' : flat
   }
 
+  /** 只接受 seq 大于 afterSeq 的 assistant 文本（避免总结回合没产出时回退到旧回复）。 */
+  async function lastAssistantTextAfter(sessionId, afterSeq) {
+    let snap
+    try {
+      snap = await sessionQuery.readSession(sessionId)
+    } catch (err) {
+      return undefined
+    }
+    const events = snap && Array.isArray(snap.events) ? snap.events : []
+    let maxSeq = typeof afterSeq === 'number' ? afterSeq : -1
+    for (const event of events) {
+      if (event && typeof event.seq === 'number' && event.seq > maxSeq) maxSeq = event.seq
+    }
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (!event || event.type !== 'assistant/message') continue
+      if (typeof afterSeq === 'number' && typeof event.seq === 'number' && event.seq <= afterSeq) break
+      const message = event.data && event.data.message
+      const text = textOf(message && message.content).trim()
+      if (text) return text
+    }
+    return undefined
+  }
+
   async function lastAssistantText(sessionId) {
     let snap
     try {
@@ -89,6 +113,8 @@ function createSideChatService(services, config) {
    */
   async function restoreFor(mainSessionId, exclude = []) {
     if (!mainSessionId || restoredFor.has(mainSessionId)) return
+    // 先占位：并发 RPC（右栏 + 浮层 state）同时进来时只允许一个扫描/恢复，避免同一会话被 resume 两次
+    restoredFor.add(mainSessionId)
     const excluded = new Set(exclude.filter((id) => typeof id === 'string'))
     let records = []
     try {
@@ -101,12 +127,12 @@ function createSideChatService(services, config) {
         && typeof record.header.id === 'string'
         && record.header.id.indexOf('side-') === 0)
     } catch (err) {
-      // 列举失败不标记完成：清掉缓存，下一次轮询还会重试
+      // 列举失败回滚占位：清掉缓存，下一次轮询还会重试
       console.error('[side-chat] 列举持久化会话失败', err)
       corpusCache = { at: 0, records: [] }
+      restoredFor.delete(mainSessionId)
       return
     }
-    restoredFor.add(mainSessionId)
     for (const record of records) {
       const id = record.header.id
       if (sideChats.has(id)) continue
@@ -122,20 +148,26 @@ function createSideChatService(services, config) {
         const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events : []
         if (excluded.has(id)) continue
         // 路由：优先最近一次 request/header；只有 model/selection 没跑过请求的会话回退到它
-        let resumeOptions
+        // 路由：request/header 与 model/selection 都记录 seq，取较新的那条
+        // （用户切过模型但还没跑下一轮就重启时，model/selection 才是最新的）
+        let headerRoute
+        let headerSeq = -1
         let recordedSelection
-        for (let i = events.length - 1; i >= 0 && resumeOptions === undefined; i -= 1) {
+        let selectionSeq = -1
+        for (let i = events.length - 1; i >= 0; i -= 1) {
           const event = events[i]
           if (!event) continue
-          if (event.type === 'request/header') {
+          const seq = typeof event.seq === 'number' ? event.seq : i
+          if (event.type === 'request/header' && headerRoute === undefined) {
             const config = event.data && event.data.header && event.data.header.config
             if (config && config.provider && config.model) {
-              resumeOptions = {
+              headerRoute = {
                 provider: config.provider,
                 model: config.model,
                 ...config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens },
                 ...config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
               }
+              headerSeq = seq
             }
           } else if (event.type === 'model/selection' && recordedSelection === undefined) {
             const selection = event.data
@@ -145,10 +177,15 @@ function createSideChatService(services, config) {
                 model: selection.model,
                 ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
               }
+              selectionSeq = seq
             }
           }
         }
-        if (resumeOptions === undefined) resumeOptions = recordedSelection
+        const resumeOptions = headerRoute === undefined
+          ? recordedSelection
+          : recordedSelection === undefined || headerSeq >= selectionSeq
+            ? headerRoute
+            : recordedSelection
         const handle = await agents.resume({
           resumeSessionId: id,
           ...resumeOptions === undefined ? {} : { agentOptions: resumeOptions },
@@ -423,12 +460,38 @@ function createSideChatService(services, config) {
     }
   }
 
+  /** 停止当前回合：调用 agent 的 cancel（等价主对话的「停止」）。 */
+  async function stop(mainSessionId, sideId) {
+    await restoreFor(mainSessionId)
+    const entry = entryOf(mainSessionId, sideId)
+    if (!entry) return { ok: false, error: '未知侧对话' }
+    if (entry.bringingBack) return { ok: false, error: '正在带回中，稍后再试' }
+    const sideAgent = agents.get(entry.sessionId)
+    if (!sideAgent) return { ok: false, error: '侧对话不在线' }
+    if (entry.status !== 'running' || typeof sideAgent.cancel !== 'function') return { ok: true, stopped: false }
+    try {
+      // 与 DSH 自己的停止一致：传 aborted 原因，turn/end 会记录
+      sideAgent.cancel({ kind: 'aborted' })
+    } catch (err) {
+      try {
+        sideAgent.cancel(new Error('用户停止'))
+      } catch (inner) {
+        return { ok: false, error: '停止失败：' + messageOf(inner) }
+      }
+    }
+    entry.status = 'idle'
+    entry.updatedAt = Date.now()
+    bumpVersion()
+    return { ok: true, stopped: true }
+  }
+
   /** 重命名：优先用会话标题服务的 rename（会 supersede 自动标题），否则直接写 session/title 事件。 */
   async function rename(mainSessionId, sideId, title) {
     await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
-    const next = String(title === undefined || title === null ? '' : title).replace(/\s+/g, ' ').trim().slice(0, 60)
+    if (typeof title !== 'string') return { ok: false, error: '标题必须是字符串' }
+    const next = title.replace(/\s+/g, ' ').trim().slice(0, 60)
     if (!next) return { ok: false, error: '标题不能为空' }
     const sideAgent = agents.get(entry.sessionId)
     const session = sideAgent && sideAgent.session
@@ -499,6 +562,7 @@ function createSideChatService(services, config) {
     // 全局工具）；必须在 setup 里 composeFrom 加入主 agent 的同一 standing 组合
     // （同工具注册、同 prompt 段）。composedPreset 读作用域链，header 可能落后于
     // agent-preset/selected 事件，故实时解析作为回退。
+    const mainOptions = (mainAgent && mainAgent.options) || {}
     const effectivePreset = (agentPresets && agentPresets.composedPreset(mainAgent.ctx)) || mainAgent.session.header.agentPreset
     // 模型：默认继承主会话当前路由（创建时快照），调用方也可指定别的模型。
     // 优先取主 agent 记录的 model/selection（含推理强度），退回创建时的 options。
@@ -512,9 +576,9 @@ function createSideChatService(services, config) {
     }
     if (!inheritedSelection) {
       inheritedSelection = normalizeSelection({
-        provider: mainAgent.options.provider,
-        model: mainAgent.options.model,
-        reasoningEffort: mainAgent.options.reasoningEffort,
+        provider: mainOptions.provider,
+        model: mainOptions.model,
+        reasoningEffort: mainOptions.reasoningEffort,
       })
     }
     const initialSelection = normalizeSelection(selection) || inheritedSelection
@@ -540,7 +604,7 @@ function createSideChatService(services, config) {
       },
       agentOptions: {
         ...initialRoute,
-        ...mainAgent.options.maxTokens === undefined ? {} : { maxTokens: mainAgent.options.maxTokens },
+        ...mainOptions.maxTokens === undefined ? {} : { maxTokens: mainOptions.maxTokens },
       },
       setup: (agentCtx) => {
         if (!agentPresets) return undefined
@@ -744,11 +808,55 @@ function createSideChatService(services, config) {
         if (text) trace.push({ kind: 'result', text: text.slice(0, 300), time: event.time })
       }
     }
+    // 等待用户回答的 ask_user_question（工具已调用、还没拿到 tool/result）：
+    // 侧面板没有交互式问答 UI，至少要把它显示出来，别让用户觉得「卡住没反应」。
+    let question = null
+    for (let i = allEvents.length - 1; i >= 0; i -= 1) {
+      const event = allEvents[i]
+      if (!event || event.type !== 'tool/call') continue
+      const data = event.data || {}
+      if (data.name !== 'ask_user_question') continue
+      const callId = data.callId || data.id
+      let answered = false
+      for (let j = i + 1; j < allEvents.length; j += 1) {
+        const later = allEvents[j]
+        if (!later) continue
+        if (later.type === 'turn/end') {
+          answered = true
+          break
+        }
+        if (later.type === 'tool/result') {
+          const laterData = later.data || {}
+          if (callId === undefined || laterData.callId === callId || laterData.id === callId) {
+            answered = true
+            break
+          }
+        }
+      }
+      if (answered) break
+      try {
+        const args = typeof data.arguments === 'string' ? JSON.parse(data.arguments) : data.arguments
+        const first = args && Array.isArray(args.questions) ? args.questions[0] : undefined
+        if (first) {
+          question = {
+            text: String(first.question || first.title || '').slice(0, 500),
+            detail: first.detail === undefined ? undefined : String(first.detail).slice(0, 400),
+            options: Array.isArray(first.options)
+              ? first.options.map((option) => String((option && (option.label || option.value)) || '')).filter(Boolean).slice(0, 6)
+              : [],
+          }
+        }
+      } catch (err) {
+        question = { text: '（问题内容解析失败，可点「停止」中断这一轮）', options: [] }
+      }
+      break
+    }
     return {
       ok: true,
       messages,
       trace: trace.slice(-12),
       running: entry.status === 'running' || entry.bringingBack === true,
+      ...question ? { question } : {},
     }
   }
 
@@ -766,6 +874,16 @@ function createSideChatService(services, config) {
     // B3 修复：先置位防重标志，再投递总结请求，消除并发窗口
     entry.status = 'running'
     entry.bringingBack = true
+    // 记录投递前的最大 seq：只接受之后新增的 assistant 文本作为总结
+    let baselineSeq = -1
+    try {
+      const baseline = await sessionQuery.readSession(entry.sessionId)
+      for (const event of baseline && Array.isArray(baseline.events) ? baseline.events : []) {
+        if (event && typeof event.seq === 'number' && event.seq > baselineSeq) baselineSeq = event.seq
+      }
+    } catch (err) {
+      baselineSeq = -1
+    }
     try {
       sideAgent.send({
         id: 'side-sum-' + Date.now(),
@@ -787,8 +905,8 @@ function createSideChatService(services, config) {
         }
       }
       entry.status = 'idle'
-      const summary = await lastAssistantText(entry.sessionId)
-      if (!summary) return { ok: false, error: '未能生成总结' }
+      const summary = await lastAssistantTextAfter(entry.sessionId, baselineSeq)
+      if (!summary) return { ok: false, error: '未能生成总结（这一轮没有产出文字）' }
       mainAgent.inject({
         id: 'side-inject-' + Date.now(),
         role: 'user',
@@ -809,8 +927,8 @@ function createSideChatService(services, config) {
 
   /** 关闭侧对话：停止 agent、归档会话、移出注册表。 */
   /** 归档一条侧对话：按 DSH 的归档逻辑（停止活动 + 进归档集合）。
-   *  先落一条 plugin 记录，重启恢复时据此跳过（不会再被拉回面板），
-   *  但会话仍留在 DSH 的归档列表里（和归档普通会话一样可找回/取消归档）。 */
+   *  面板侧不再恢复它：客户端把 id 记进 localStorage，之后每次 state 都带 exclude，
+   *  宿主恢复时跳过这些 id（名单丢了最坏情况是被重新恢复出来，不会丢数据）。 */
   async function close(mainSessionId, sideId) {
     await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
@@ -861,7 +979,7 @@ function createSideChatService(services, config) {
     sideChats.clear()
   }
 
-  return { open, send, state, events, bringBack, close, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, events, bringBack, close, stop, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -945,6 +1063,13 @@ return {
       const sideId = strArg(args, 'id')
       if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
       return sideChat.bringBack(mainSessionId, sideId)
+    })
+    // 停止侧对话当前回合
+    registerRpc('sidechat/stop', (args) => {
+      const mainSessionId = strArg(args, 'mainSessionId')
+      const sideId = strArg(args, 'id')
+      if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
+      return sideChat.stop(mainSessionId, sideId)
     })
     // 重命名侧对话（写 session/title，重启恢复后标题仍然是新的）
     registerRpc('sidechat/rename', (args) => {

@@ -386,12 +386,15 @@ return {
     function SideToggle(props) {
       const { isOpen, isMinimized } = usePanelState()
       const sessionId = props.sessionId || useCurrentSessionId(props)
+      // 主对话里也能看到「有侧对话在跑」：轮询 state 时顺便统计运行中的条数
+      const [activeCount, setActiveCount] = React.useState(0)
       React.useEffect(() => {
         if (!timer) return undefined
         return timer.interval(async () => {
           if (!sessionId) return
           try {
             const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds() })
+            if (res && Array.isArray(res.chats)) setActiveCount(res.chats.filter((c) => c && c.status === 'running').length)
             if (res && typeof res.openSignal === 'number') {
               const prev = lastOpenSignals.get(sessionId)
               if (prev === undefined) {
@@ -419,7 +422,15 @@ return {
           if (store.getOpen() && !store.getMinimized()) store.setOpen(false)
           else store.setOpen(true)
         },
-      }, '⤳')
+      },
+        React.createElement('span', { className: 'dsh-sc-toggle-icon' }, '⤳'),
+        activeCount > 0
+          ? React.createElement('span', {
+              className: 'dsh-sc-toggle-badge',
+              title: activeCount + ' 条侧对话正在运行',
+            }, String(activeCount))
+          : null,
+      )
     }
 
     // ---- 侧边面板（inline=true 时作为官方右侧栏 tab 正文渲染，否则是浮层面板） ----
@@ -446,10 +457,15 @@ return {
       // 运行中回合的逐步骤进度（伪流式：思考/工具/结果，宿主按会话事件抽取）
       const [trace, setTrace] = React.useState([])
       const [running, setRunning] = React.useState(false)
+      // 侧对话正在等待用户回答的问题（ask_user_question 已调用、未答复）
+      const [question, setQuestion] = React.useState(null)
       // 列表页 / 对话页：默认列表，点某条进入对话（返回即列表）
       const [view, setView] = React.useState('list')
       // 刚新建、state 还没轮询到的对话 id（避免被「选中项不存在」的保护逻辑弹回列表）
       const [pendingChatId, setPendingChatId] = React.useState(null)
+      // 改名：列表项上点 ✎ 进入内联编辑，回车/失焦提交，Esc 取消
+      const [renamingId, setRenamingId] = React.useState(null)
+      const [renameText, setRenameText] = React.useState('')
       // 折叠：逐条消息手动折叠（超长消息默认折叠）+ 步骤区折叠
       const [collapsedMsgs, setCollapsedMsgs] = React.useState({})
       const [traceCollapsed, setTraceCollapsed] = React.useState(false)
@@ -522,6 +538,7 @@ return {
           if (res && res.ok) {
             setTrace(Array.isArray(res.trace) ? res.trace : [])
             setRunning(res.running === true)
+            setQuestion(res.question || null)
           }
         } catch (err) {
           console.error('[side-chat] events 失败', err)
@@ -671,9 +688,6 @@ return {
         ? (selected.selection && selected.selection.reasoningEffort) || defaultEffort || ''
         : nextEffort || defaultEffort || ''
 
-      // 改名：列表项上点 ✎ 进入内联编辑，回车/失焦提交，Esc 取消
-      const [renamingId, setRenamingId] = React.useState(null)
-      const [renameText, setRenameText] = React.useState('')
       const startRename = (c) => {
         setRenamingId(c.id)
         setRenameText(typeof c.title === 'string'
@@ -765,11 +779,11 @@ return {
       const send = async () => {
         const text = input.trim()
         if (!text || !selectedId) return
-        setInput('')
         setNotice('')
         try {
           const res = await host.call('sidechat/send', { mainSessionId: sessionId, id: selectedId, text })
           if (res && !res.ok) setNotice(res.error || '发送失败')
+          else setInput('')
           refreshEvents()
         } catch (err) {
           setNotice('发送失败：' + String(err))
@@ -794,6 +808,19 @@ return {
           setNotice('带回失败：' + String(err))
         } finally {
           setBringingBack(false)
+        }
+      }
+
+      const stopChat = async () => {
+        if (!selectedId) return
+        setNotice('正在停止…')
+        try {
+          const res = await host.call('sidechat/stop', { mainSessionId: sessionId, id: selectedId })
+          setNotice(res && res.ok ? '已停止' : (res && res.error) || '停止失败')
+          refreshState()
+          refreshEvents()
+        } catch (err) {
+          setNotice('停止失败：' + String(err))
         }
       }
 
@@ -1028,8 +1055,25 @@ return {
           )
         : null
 
+      const questionBox = question && selected
+        ? React.createElement('div', { className: 'dsh-sc-question' },
+            React.createElement('div', { className: 'dsh-sc-question-title' }, '侧对话在等你回答'),
+            React.createElement('div', { className: 'dsh-sc-question-text' }, String(question.text || '')),
+            question.options && question.options.length
+              ? React.createElement('div', { className: 'dsh-sc-question-options' },
+                  question.options.map((label, index) => React.createElement('span', {
+                    key: index,
+                    className: 'dsh-sc-question-option',
+                  }, String(label))))
+              : null,
+            React.createElement('div', { className: 'dsh-sc-question-hint' },
+              '面板暂不支持直接作答：可以点「停止」中断这一轮，或等它自己超时'),
+          )
+        : null
+
       const body = selected
         ? React.createElement('div', { ref: msgBoxRef, className: 'dsh-sc-msg' },
+            questionBox,
             traceBox,
             renderedMessages.length === 0
               ? React.createElement('div', { className: 'dsh-sc-empty' }, '还没有消息\n发一句话开始这段并行对话')
@@ -1083,6 +1127,13 @@ return {
         ? React.createElement('div', { className: 'dsh-sc-foot' },
             usageLine,
             React.createElement('div', { className: 'dsh-sc-actions' },
+              running
+                ? React.createElement('button', {
+                    className: 'dsh-sc-btn',
+                    onClick: stopChat,
+                    title: '停止这条侧对话的当前回合（等价主对话的停止）',
+                  }, '停止')
+                : null,
               React.createElement('button', {
                 className: 'dsh-sc-btn',
                 onClick: bringBack,

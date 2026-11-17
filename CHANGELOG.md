@@ -12,7 +12,14 @@
 - **思考过程可见**：侧对话消息里带上 DSH 的 `reasoning` 块，面板以可折叠的「思考过程」显示（此前只取 `text` 块，思考被丢弃）。
 - **费用可见**：新增 `sidechat/usage` RPC，调用计费插件 `dsh-cost-meter` 暴露的 `costMeter.getSessionCost()`，在面板底部显示该侧对话的费用 / 缓存 / 输入 / 输出 token；计费插件缺失时自动隐藏。
 - **重启后恢复**：注册表原本只在内存里，DSH 重启后面板就空了。现在第一次打开某个主会话的侧边对话时，会扫描持久化会话（`sessionQuery.listSessions()` 里 `header.parentSession` 指向该主会话、id 以 `side-` 开头的），逐个 `agents.resume()` 挂回面板，标题取自会话标题、继承档位从注入摘要反推，并重新归档（不再出现在「无工作区」列表里）。
-- **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 10 条（models / select-model / usage / model-info）。
+- **列表/对话两段式**：默认停在对话列表，点条目进对话页；新建后直接进入新对话；归档后回列表。
+- **重命名**：列表项 ✎ 内联改名（回车/失焦提交、Esc 取消），走 `sessionTitle.rename` 或 `session/title`，重启后保留。
+- **停止**：对话页运行中出现「停止」按钮，调用 agent.cancel（等价主对话停止）。
+- **等待回答提示**：侧对话调用 `ask_user_question` 时，面板显示问题与选项（暂不支持直接作答，可点「停止」中断）。
+- **主对话状态提示**：会话标题栏的 ⤳ 按钮上显示运行中侧对话数量角标。
+- **视觉**：列表卡片化、气泡/输入区/步骤区排版与滚动条细化（由 Haiku 子代理完成，纯 CSS）。
+- **审查修复**：浮层面板 hook 顺序（改名 state 上移）、恢复并发只跑一次、恢复路由取 request/header 与 model/selection 中较新者、把回调总结只接受投递后新增的文本、rename 只接受字符串、`mainAgent.options` 缺失保护。
+- **测试**：`scripts/smoke-npm.mjs` 路由 12 条（新增 stop）。
 - **review 修复**：① 主会话依赖默认路由（`options` 里没有 provider/model、`model.current()` 也拿不到完整选择）时不再解构 `initialSelection` 抛错，改为把这两个字段留空交给 `agents.create` 的默认值；② 「继承最近」的单条消息也受 2 万字预算约束（先截断再入列），避免一条超长回复撑破上限；③ 新建时的上下文选择器改为常显（只影响下一条新建），不再因为已有侧对话被自动选中而消失。
 
 ## [0.1.2] - 2026-08-14
