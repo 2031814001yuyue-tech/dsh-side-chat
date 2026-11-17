@@ -30,6 +30,10 @@ function createSideChatService(services, config) {
   /** 每主会话的 openSignal（open() 时递增，state() 按主会话返回）：
    *  全局计数会让「换会话」误触发自动打开（新挂载的 ⤳ 按钮基线为 0）。 */
   const openSignals = new Map()
+  /** 已做过「重启后恢复」扫描的主会话（懒执行，一次即可）。 */
+  const restoredFor = new Set()
+  /** 持久化会话清单缓存（避免每次 state 轮询都全量扫一遍）。 */
+  let corpusCache = { at: 0, records: [] }
 
   function bumpVersion() {
     version += 1
@@ -70,6 +74,99 @@ function createSideChatService(services, config) {
       if (text) return text
     }
     return undefined
+  }
+
+  /**
+   * 重启恢复：DSH 重启后内存注册表是空的，但侧会话本身持久化在磁盘上
+   * （header.parentSession 指回主会话、id 以 side- 开头）。
+   * 第一次问某个主会话时，扫描持久化清单，把它的侧会话逐个 agents.resume 回来，
+   * 重新挂进面板并再次归档（不污染会话列表）。失败的单条只记日志，不影响其它。
+   */
+  async function restoreFor(mainSessionId) {
+    if (!mainSessionId || restoredFor.has(mainSessionId)) return
+    restoredFor.add(mainSessionId)
+    let records = []
+    try {
+      if (Date.now() - corpusCache.at > 30000) {
+        const all = await sessionQuery.listSessions()
+        corpusCache = { at: Date.now(), records: Array.isArray(all) ? all : [] }
+      }
+      records = corpusCache.records.filter((record) => record && record.header
+        && record.header.parentSession === mainSessionId
+        && typeof record.header.id === 'string'
+        && record.header.id.indexOf('side-') === 0)
+    } catch (err) {
+      console.error('[side-chat] 列举持久化会话失败', err)
+      return
+    }
+    for (const record of records) {
+      const id = record.header.id
+      if (sideChats.has(id)) continue
+      try {
+        const header = record.header
+        const handle = await agents.resume({
+          resumeSessionId: id,
+          setup: (agentCtx) => {
+            if (!agentPresets) return undefined
+            const mainAgent = agents.get(mainSessionId)
+            const joined = mainAgent ? agentPresets.composeFrom(agentCtx, mainAgent.ctx) : undefined
+            if (joined === undefined && header.agentPreset) {
+              return agentPresets.mount(agentCtx, header.agentPreset).then(() => undefined)
+            }
+            return undefined
+          },
+        })
+        let title
+        try {
+          title = await sessionQuery.readTitle(id)
+        } catch (err) {
+          title = undefined
+        }
+        // 继承档位没有单独持久化：从创建时注入的 notice 摘要反推
+        let inheritMode = null
+        try {
+          const snap = await sessionQuery.readSession(id)
+          const injected = (snap && Array.isArray(snap.events) ? snap.events : []).find((event) => event
+            && event.type === 'user/message'
+            && event.data && event.data.source
+            && event.data.source.kind === 'sidechat'
+            && typeof event.data.source.summary === 'string'
+            && event.data.source.summary.indexOf('继承自主对话的') === 0)
+          if (injected) inheritMode = injected.data.source.summary.indexOf('完整') >= 0 ? 'full' : 'recent'
+        } catch (err) {
+          inheritMode = null
+        }
+        counter += 1
+        sideChats.set(id, {
+          sideId: id,
+          sessionId: id,
+          mainSessionId,
+          title: title || ('侧对话 #' + counter),
+          status: 'idle',
+          error: null,
+          handle,
+          updatedAt: Date.now(),
+          bringingBack: false,
+          lastPreview: '',
+          selection: undefined,
+          inheritMode,
+          restored: true,
+        })
+        if (workspaceRegistry) {
+          try {
+            await workspaceRegistry.archiveSession(id)
+          } catch (err) {
+            console.error('[side-chat] 恢复后归档失败', err)
+          }
+        }
+      } catch (err) {
+        console.error('[side-chat] 恢复侧对话 ' + id + ' 失败（该会话可能正被其它窗口占用）', err)
+      }
+    }
+    if (records.length) {
+      bumpVersion()
+      console.log('[side-chat] 已恢复 ' + records.length + ' 条侧对话（主会话 ' + mainSessionId + '）')
+    }
   }
 
   /** 选择项规范化：provider/model 必须都在，reasoningEffort 可选。 */
@@ -155,6 +252,7 @@ function createSideChatService(services, config) {
 
   /** 切换一条侧对话的模型：校验可用后写入该侧会话的 model/selection 事件。 */
   async function selectModel(mainSessionId, sideId, selection) {
+    await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     const sideAgent = agents.get(entry.sessionId)
@@ -266,6 +364,7 @@ function createSideChatService(services, config) {
 
   /** 侧对话花费：交给计费插件（dsh-cost-meter）的 costMeter 服务；缺失时返回 null。 */
   async function usage(mainSessionId, sideId) {
+    await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     const costMeter = services.costMeter
@@ -432,6 +531,7 @@ function createSideChatService(services, config) {
 
   /** 向侧对话注入一条真实用户消息并唤醒侧 agent。 */
   async function send(mainSessionId, sideId, text) {
+    await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     const trimmed = String(text || '').trim()
@@ -449,7 +549,8 @@ function createSideChatService(services, config) {
   }
 
   /** 面板轮询状态：侧对话列表 + 版本 + 自动开面板信号。 */
-  function state(mainSessionId) {
+  async function state(mainSessionId) {
+    await restoreFor(mainSessionId)
     const chats = []
     for (const entry of sideChats.values()) {
       if (entry.mainSessionId !== mainSessionId) continue
@@ -471,6 +572,7 @@ function createSideChatService(services, config) {
 
   /** 面板消息流：只保留真实用户输入与助手回复，过滤系统注入与总结请求。 */
   async function events(mainSessionId, sideId) {
+    await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     let snap
@@ -521,6 +623,7 @@ function createSideChatService(services, config) {
 
   /** 带回主对话：侧 agent 自总结 → notice 折叠行注入主会话（不唤醒主 agent）。 */
   async function bringBack(mainSessionId, sideId) {
+    await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     if (entry.bringingBack) return { ok: false, error: '正在带回中，请稍候' }
@@ -575,6 +678,7 @@ function createSideChatService(services, config) {
 
   /** 关闭侧对话：停止 agent、归档会话、移出注册表。 */
   async function close(mainSessionId, sideId) {
+    await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     sideChats.delete(sideId)

@@ -11,7 +11,8 @@
 - **推理强度可选**：面板新增 effort 下拉（档位通过新增的 sidechat/model-info RPC 按模型精确查询——llm.listModels 只给名字，不含 reasoning 元数据），切换时连带模型一起写入 `model/selection`，下一轮生效；新建时也可预先选好。
 - **思考过程可见**：侧对话消息里带上 DSH 的 `reasoning` 块，面板以可折叠的「思考过程」显示（此前只取 `text` 块，思考被丢弃）。
 - **费用可见**：新增 `sidechat/usage` RPC，调用计费插件 `dsh-cost-meter` 暴露的 `costMeter.getSessionCost()`，在面板底部显示该侧对话的费用 / 缓存 / 输入 / 输出 token；计费插件缺失时自动隐藏。
-- **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 9 条（新增 models / select-model / usage）。
+- **重启后恢复**：注册表原本只在内存里，DSH 重启后面板就空了。现在第一次打开某个主会话的侧边对话时，会扫描持久化会话（`sessionQuery.listSessions()` 里 `header.parentSession` 指向该主会话、id 以 `side-` 开头的），逐个 `agents.resume()` 挂回面板，标题取自会话标题、继承档位从注入摘要反推，并重新归档（不再出现在「无工作区」列表里）。
+- **测试**：`scripts/smoke-npm.mjs` 的路由计数更新为 10 条（models / select-model / usage / model-info）。
 - **review 修复**：① 主会话依赖默认路由（`options` 里没有 provider/model、`model.current()` 也拿不到完整选择）时不再解构 `initialSelection` 抛错，改为把这两个字段留空交给 `agents.create` 的默认值；② 「继承最近」的单条消息也受 2 万字预算约束（先截断再入列），避免一条超长回复撑破上限；③ 新建时的上下文选择器改为常显（只影响下一条新建），不再因为已有侧对话被自动选中而消失。
 
 ## [0.1.2] - 2026-08-14
