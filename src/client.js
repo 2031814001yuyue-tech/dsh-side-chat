@@ -46,6 +46,9 @@ const PANEL_CSS = `
 .dsh-sc-think{margin:2px 0 6px;border-left:2px solid var(--dsw-alias-border-l2);padding-left:8px}
 .dsh-sc-think summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px;outline:none}
 .dsh-sc-think-body{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:pre-wrap;line-height:1.5;max-height:240px;overflow-y:auto}
+.dsh-sc-listpage{flex:1;min-height:0;overflow-y:auto;padding:2px 2px 8px}
+.dsh-sc-back{padding:0 8px;font-size:14px;line-height:24px}
+.dsh-sc-head-chat{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--dsw-alias-label-primary)}
 .dsh-sc-fold{flex:none;margin-left:auto;background:transparent;border:0;padding:0 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;cursor:pointer}
 .dsh-sc-fold:hover{color:var(--dsw-alias-label-secondary)}
 .dsh-sc-folded{max-height:72px;overflow:hidden;color:var(--dsw-alias-label-secondary)}
@@ -410,6 +413,8 @@ return {
       // 运行中回合的逐步骤进度（伪流式：思考/工具/结果，宿主按会话事件抽取）
       const [trace, setTrace] = React.useState([])
       const [running, setRunning] = React.useState(false)
+      // 列表页 / 对话页：默认列表，点某条进入对话（返回即列表）
+      const [view, setView] = React.useState('list')
       // 折叠：逐条消息手动折叠（超长消息默认折叠）+ 步骤区折叠
       const [collapsedMsgs, setCollapsedMsgs] = React.useState({})
       const [traceCollapsed, setTraceCollapsed] = React.useState(false)
@@ -467,10 +472,8 @@ return {
             }
             return res.chats
           })
-          setSelectedId((cur) => {
-            if (cur && res.chats.some((c) => c.id === cur)) return cur
-            return res.chats.length ? res.chats[0].id : null
-          })
+          // 不再自动选中第一条：面板默认停在列表页，点哪条进哪条
+          setSelectedId((cur) => (cur && res.chats.some((c) => c.id === cur) ? cur : null))
         } catch (err) {
           console.error('[side-chat] state 失败', err)
         }
@@ -545,6 +548,12 @@ return {
           box.scrollTop = box.scrollHeight
         }
       }, [messages, selectedId, isOpen, isMinimized])
+
+      // 对话页但选中项已消失（被归档/关闭）时退回列表
+      React.useEffect(() => {
+        if (view !== 'chat') return
+        if (!selectedId || !chats.some((c) => c.id === selectedId)) setView('list')
+      }, [view, selectedId, chats])
 
       // 模型精确信息：只在生效模型变化时查一次
       const infoChat = chats.find((c) => c.id === selectedId) || null
@@ -635,6 +644,7 @@ return {
           })
           if (res && res.ok) {
             setSelectedId(res.id)
+            setView('chat')
             if (res.notice) setNotice(res.notice)
             refreshState()
           } else {
@@ -719,7 +729,13 @@ return {
         try {
           const res = await host.call('sidechat/close', { mainSessionId: sessionId, id })
           if (res && !res.ok) setNotice(res.error || '归档失败')
-          else rememberArchivedId(id)
+          else {
+            rememberArchivedId(id)
+            if (id === selectedId) {
+              setSelectedId(null)
+              setView('list')
+            }
+          }
           refreshState()
         } catch (err) {
           setNotice('归档失败：' + String(err))
@@ -811,19 +827,38 @@ return {
       }, efforts.map((effort) => React.createElement('option', { key: effort.id, value: effort.id }, effort.name || effort.id)))
 
       // 右侧栏里 tab 条已经写着「侧边对话」，正文头不再重复标题，只留一行说明 + 新建。
+      const chatTitle = selected
+        ? (typeof selected.title === 'string'
+            ? selected.title
+            : selected.title && typeof selected.title.title === 'string' ? selected.title.title : '侧对话')
+        : '侧边对话'
       const head = React.createElement('div', { className: 'dsh-sc-head' },
-        inline
-          ? React.createElement('div', { className: 'dsh-sc-head-title' },
-              React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
-            )
-          : React.createElement('div', { className: 'dsh-sc-head-title' },
-              React.createElement('span', { className: 'dsh-sc-head-name' }, '⤳ 侧边对话'),
-              React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
-            ),
-        inheritPicker,
+        view === 'chat'
+          ? React.createElement('button', {
+              className: 'dsh-sc-btn dsh-sc-back',
+              onClick: () => setView('list'),
+              title: '返回对话列表',
+            }, '←')
+          : null,
+        React.createElement('div', { className: 'dsh-sc-head-title' },
+          view === 'chat'
+            ? React.createElement('span', { className: 'dsh-sc-head-chat' }, chatTitle)
+            : inline
+              ? React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文')
+              : null,
+          inline || view === 'chat'
+            ? null
+            : React.createElement('span', { className: 'dsh-sc-head-name' }, '⤳ 侧边对话'),
+          inline || view === 'chat'
+            ? null
+            : React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
+        ),
+        view === 'chat' ? null : inheritPicker,
         picker,
         effortPicker,
-        React.createElement('button', { className: 'dsh-sc-btn primary', onClick: createChat }, '＋ 新建'),
+        view === 'chat'
+          ? null
+          : React.createElement('button', { className: 'dsh-sc-btn primary', onClick: createChat }, '＋ 新建'),
         inline ? null : React.createElement('button', {
           className: 'dsh-sc-btn',
           onClick: () => store.setMinimized(true),
@@ -848,8 +883,11 @@ return {
           ? React.createElement('div', { className: 'dsh-sc-empty' }, '还没有侧边对话\n点击「＋ 新建」，开一条不打扰主对话的并行会话')
           : chats.map((c) => React.createElement('div', {
               key: c.id,
-              className: 'dsh-sc-item' + (c.id === selectedId ? ' sel' : ''),
-              onClick: () => setSelectedId(c.id),
+              className: 'dsh-sc-item' + (c.id === selectedId && view === 'chat' ? ' sel' : ''),
+              onClick: () => {
+                setSelectedId(c.id)
+                setView('chat')
+              },
             },
               React.createElement('div', { className: 'dsh-sc-item-title' },
                 React.createElement('span', { className: 'dsh-sc-item-name' },
@@ -987,11 +1025,11 @@ return {
       if (inline) {
         return React.createElement('div', { className: 'dsh-sc-tabbody' },
           head,
-          list,
+          view === 'chat' ? null : React.createElement('div', { className: 'dsh-sc-listpage' }, list),
           noticeBar,
           selectedError,
-          body,
-          foot,
+          view === 'chat' ? body : null,
+          view === 'chat' ? foot : null,
         )
       }
 
@@ -1005,11 +1043,11 @@ return {
       },
         resizer,
         head,
-        list,
+        view === 'chat' ? null : React.createElement('div', { className: 'dsh-sc-listpage' }, list),
         noticeBar,
         selectedError,
-        body,
-        foot,
+        view === 'chat' ? body : null,
+        view === 'chat' ? foot : null,
       )
     }
 
