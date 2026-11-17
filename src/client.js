@@ -806,7 +806,11 @@ return {
             },
               React.createElement('div', { className: 'dsh-sc-item-title' },
                 React.createElement('span', { className: 'dsh-sc-item-name' },
-                  c.title,
+                  typeof c.title === 'string'
+                    ? c.title
+                    : c.title && typeof c.title === 'object' && typeof c.title.title === 'string'
+                      ? c.title.title
+                      : '侧对话',
                   c.inheritMode
                     ? React.createElement('span', { className: 'dsh-sc-item-tag' }, c.inheritMode === 'full' ? '继承·完整' : '继承·最近')
                     : null,

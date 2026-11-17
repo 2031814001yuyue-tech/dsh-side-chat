@@ -104,8 +104,32 @@ function createSideChatService(services, config) {
       if (sideChats.has(id)) continue
       try {
         const header = record.header
+        // 读一次会话，既用于恢复模型路由（最近一次 request/header），也用于反推继承档位
+        let snapshot
+        try {
+          snapshot = await sessionQuery.readSession(id)
+        } catch (err) {
+          snapshot = undefined
+        }
+        const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events : []
+        let resumeOptions
+        for (let i = events.length - 1; i >= 0; i -= 1) {
+          const event = events[i]
+          if (!event || event.type !== 'request/header') continue
+          const config = event.data && event.data.header && event.data.header.config
+          if (config && config.provider && config.model) {
+            resumeOptions = {
+              provider: config.provider,
+              model: config.model,
+              ...config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens },
+              ...config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
+            }
+          }
+          break
+        }
         const handle = await agents.resume({
           resumeSessionId: id,
+          ...resumeOptions === undefined ? {} : { agentOptions: resumeOptions },
           setup: (agentCtx) => {
             if (!agentPresets) return undefined
             const mainAgent = agents.get(mainSessionId)
@@ -116,17 +140,19 @@ function createSideChatService(services, config) {
             return undefined
           },
         })
+        // readTitle 在不同版本里可能返回字符串或标题快照对象：统一取字符串
         let title
         try {
-          title = await sessionQuery.readTitle(id)
+          const raw = await sessionQuery.readTitle(id)
+          const text = typeof raw === 'string' ? raw : raw && typeof raw.title === 'string' ? raw.title : undefined
+          title = text ? String(text).slice(0, 120) : undefined
         } catch (err) {
           title = undefined
         }
         // 继承档位没有单独持久化：从创建时注入的 notice 摘要反推
         let inheritMode = null
         try {
-          const snap = await sessionQuery.readSession(id)
-          const injected = (snap && Array.isArray(snap.events) ? snap.events : []).find((event) => event
+          const injected = (snapshot && Array.isArray(snapshot.events) ? snapshot.events : []).find((event) => event
             && event.type === 'user/message'
             && event.data && event.data.source
             && event.data.source.kind === 'sidechat'
