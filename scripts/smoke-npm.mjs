@@ -81,12 +81,19 @@ const expectedPaths = [
   '/sidechat-api/sidechat/events',
   '/sidechat-api/sidechat/bring-back',
   '/sidechat-api/sidechat/close',
+  '/sidechat-api/sidechat/models',
+  '/sidechat-api/sidechat/select-model',
+  '/sidechat-api/sidechat/usage',
+  '/sidechat-api/sidechat/model-info',
+  '/sidechat-api/sidechat/rename',
+  '/sidechat-api/sidechat/stop',
+  '/sidechat-api/sidechat/answer',
 ]
 for (const path of expectedPaths) {
   ok(routes.some((r) => r.kind === 'exact' && r.path === path), '注册路由 ' + path)
 }
-ok(routes.length === 6, '恰好 6 条路由', '实际 ' + routes.length)
-ok(effects.length === 7, 'ctx.effect 共 7 个（6 路由 + 1 disposeAll）', '实际 ' + effects.length)
+ok(routes.length === 13, '恰好 13 条路由', '实际 ' + routes.length)
+ok(effects.length === 14, 'ctx.effect 共 14 个（13 路由 + 1 disposeAll）', '实际 ' + effects.length)
 
 async function callRoute(path, rawBody) {
   const route = routes.find((r) => r.path === path)
@@ -159,7 +166,7 @@ async function callRoute(path, rawBody) {
 {
   const before = routes.length
   for (const dispose of effects) dispose()
-  ok(routes.length === 0 && before === 6, 'fiber 回收后路由全部移除')
+  ok(routes.length === 0 && before === 13, 'fiber 回收后路由全部移除')
 }
 {
   // 回归：个别组合缺少 workspaceRegistry 时，插件仍激活（降级：跳过归档）
@@ -185,7 +192,7 @@ async function callRoute(path, rawBody) {
     threw = true
   }
   ok(!threw, '缺 workspaceRegistry 时 apply 不抛异常')
-  ok(routes2.length === 6, '缺 workspaceRegistry 时仍注册 6 条路由', '实际 ' + routes2.length)
+  ok(routes2.length === 13, '缺 workspaceRegistry 时仍注册 12 条路由', '实际 ' + routes2.length)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+- **右侧栏集成**：面板改为注册为官方右侧栏 tab（`sidebarRightTabs.register` + `sidebar.right.pane.tab` 席位），不再浮在主对话之上；「开始」页新增「侧边对话」入口（`guide`）。右侧栏服务缺失时自动退回原浮层面板。
+- **会话解析修复**：`shell.overlay` 的 standardProps 没有 `sessionId`，改为按 `useSessions` 快照取「主视图」会话（对齐 ui-layout 的做法），修复「＋ 新建」永远提示“请先打开一个会话”、`/side` 不自动开面板的问题。
+- **macOS 适配**：面板改为浮层卡片（右上/下方内缩 12px、圆角、菜单材质 + backdrop-filter、elevation 阴影）；补 `-webkit-app-region:no-drag` 与 `data-window-drag-exclude`，避免点按钮变成拖窗口；输入框 Enter 增加 IME 组词判断。
+- **模型切换**：新增 `sidechat/models`、`sidechat/select-model` RPC 与面板下拉；默认继承主对话模型，切换时写入该侧会话的 `model/selection`（下一轮生效），切换前用 `llm.resolveCallConfig` 校验可用性。
+- **上下文继承**：新增「独立 / 继承最近 / 继承完整」三档。继承只复制主对话中用户与助手的文字（最近 ≤20 条 / ≤2 万字，或全部），不含工具调用与工具输出；主对话无已完成回合时自动退回独立上下文。
+- **修复**：注入消息的来源改用生产者自身 kind（v4 会话格式拒绝 `kind:'plugin'`，此前继承上下文与「带回主对话」注入会报 `format v4 message requires a producer-owned source kind`）。
+- **推理强度可选**：面板新增 effort 下拉（档位通过新增的 sidechat/model-info RPC 按模型精确查询——llm.listModels 只给名字，不含 reasoning 元数据），切换时连带模型一起写入 `model/selection`，下一轮生效；新建时也可预先选好。
+- **思考过程可见**：侧对话消息里带上 DSH 的 `reasoning` 块，面板以可折叠的「思考过程」显示（此前只取 `text` 块，思考被丢弃）。
+- **费用可见**：新增 `sidechat/usage` RPC，调用计费插件 `dsh-cost-meter` 暴露的 `costMeter.getSessionCost()`，在面板底部显示该侧对话的费用 / 缓存 / 输入 / 输出 token；计费插件缺失时自动隐藏。
+- **重启后恢复**：注册表原本只在内存里，DSH 重启后面板就空了。现在第一次打开某个主会话的侧边对话时，会扫描持久化会话（`sessionQuery.listSessions()` 里 `header.parentSession` 指向该主会话、id 以 `side-` 开头的），逐个 `agents.resume()` 挂回面板，标题取自会话标题、继承档位从注入摘要反推，并重新归档（不再出现在「无工作区」列表里）。
+- **列表/对话两段式**：默认停在对话列表，点条目进对话页；新建后直接进入新对话；归档后回列表。
+- **重命名**：列表项 ✎ 内联改名（回车/失焦提交、Esc 取消），走 `sessionTitle.rename` 或 `session/title`，重启后保留。
+- **停止**：对话页运行中出现「停止」按钮，调用 agent.cancel（等价主对话停止）。
+- **问答通道接入**：侧对话调用 `ask_user_question` 时，面板直接渲染交互卡片（问题/说明/选项/自定义输入/提交），走 DSH 的 `userQuestions.continued()` 读待答问题、`userQuestions.answer()` 提交（内部 steer `user-question-reply`），不再只是"看得见不能答"。
+- **主对话状态提示**：会话标题栏的 ⤳ 按钮上显示运行中侧对话数量角标。
+- **视觉**：列表卡片化、气泡/输入区/步骤区排版与滚动条细化（由 Haiku 子代理完成，纯 CSS）。
+- **审查修复**：浮层面板 hook 顺序（改名 state 上移）、恢复并发只跑一次、恢复路由取 request/header 与 model/selection 中较新者、把回调总结只接受投递后新增的文本、rename 只接受字符串、`mainAgent.options` 缺失保护。
+- **测试**：`scripts/smoke-npm.mjs` 路由 12 条（新增 stop）。
+- **review 修复**：① 主会话依赖默认路由（`options` 里没有 provider/model、`model.current()` 也拿不到完整选择）时不再解构 `initialSelection` 抛错，改为把这两个字段留空交给 `agents.create` 的默认值；② 「继承最近」的单条消息也受 2 万字预算约束（先截断再入列），避免一条超长回复撑破上限；③ 新建时的上下文选择器改为常显（只影响下一条新建），不再因为已有侧对话被自动选中而消失。
+
 ## [0.1.2] - 2026-08-14
 
 - bundle 方式安装：包内自带 `cordis.patch.yml` + `dsh.bundle.patch` 元数据，把 `dsh-side-chat` 加进 profile 的 `dsh.profile.bundles` 即自动加载（与 dsh-vision 同款机制），不再依赖手动编辑 profile 的 `cordis.patch.yml`（该文件可能被外部启动脚本清理）。
