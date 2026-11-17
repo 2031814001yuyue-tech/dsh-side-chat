@@ -46,6 +46,11 @@ const PANEL_CSS = `
 .dsh-sc-think{margin:2px 0 6px;border-left:2px solid var(--dsw-alias-border-l2);padding-left:8px}
 .dsh-sc-think summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px;outline:none}
 .dsh-sc-think-body{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:pre-wrap;line-height:1.5;max-height:240px;overflow-y:auto}
+.dsh-sc-fold{flex:none;margin-left:auto;background:transparent;border:0;padding:0 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;cursor:pointer}
+.dsh-sc-fold:hover{color:var(--dsw-alias-label-secondary)}
+.dsh-sc-folded{max-height:72px;overflow:hidden;color:var(--dsw-alias-label-secondary)}
+.dsh-sc-clickable{cursor:pointer}
+.dsh-sc-trace-count{margin-left:auto;color:var(--dsw-alias-label-tertiary);font-size:11px}
 .dsh-sc-trace{margin:4px 0 10px;border-left:2px solid var(--dsw-alias-border-l2);padding:4px 0 4px 8px;display:flex;flex-direction:column;gap:3px}
 .dsh-sc-trace-head{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .dsh-sc-trace-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}
@@ -405,6 +410,9 @@ return {
       // 运行中回合的逐步骤进度（伪流式：思考/工具/结果，宿主按会话事件抽取）
       const [trace, setTrace] = React.useState([])
       const [running, setRunning] = React.useState(false)
+      // 折叠：逐条消息手动折叠（超长消息默认折叠）+ 步骤区折叠
+      const [collapsedMsgs, setCollapsedMsgs] = React.useState({})
+      const [traceCollapsed, setTraceCollapsed] = React.useState(false)
       const msgBoxRef = React.useRef(null)
       const [width, setWidth] = React.useState(380)
       const [dragging, setDragging] = React.useState(false)
@@ -574,6 +582,7 @@ return {
         () => messages.map((m, index) => ({
           role: m.role,
           time: m.time,
+          text: m.text || '',
           thinking: m.thinking || '',
           blocks: markdown.renderMarkdown(m.text, 'm' + index + '_'),
         })),
@@ -861,11 +870,16 @@ return {
 
       const traceBox = running || trace.length
         ? React.createElement('div', { className: 'dsh-sc-trace' },
-            React.createElement('div', { className: 'dsh-sc-trace-head' },
+            React.createElement('div', {
+              className: 'dsh-sc-trace-head dsh-sc-clickable',
+              title: traceCollapsed ? '展开步骤' : '折叠步骤',
+              onClick: () => setTraceCollapsed((value) => !value),
+            },
               running ? React.createElement('span', { className: 'dsh-sc-trace-dot running' }) : null,
               running ? '运行中…' : '本轮步骤',
+              React.createElement('span', { className: 'dsh-sc-trace-count' }, traceCollapsed ? '▸' : '▾'),
             ),
-            trace.slice(-8).map((row, index) => React.createElement('div', {
+            traceCollapsed ? null : trace.slice(-8).map((row, index) => React.createElement('div', {
               key: index,
               className: 'dsh-sc-trace-row ' + (row && row.kind ? row.kind : 'text'),
             },
@@ -881,24 +895,36 @@ return {
             traceBox,
             renderedMessages.length === 0
               ? React.createElement('div', { className: 'dsh-sc-empty' }, '还没有消息\n发一句话开始这段并行对话')
-              : renderedMessages.map((m, index) => React.createElement('div', {
-                  key: index,
-                  className: 'dsh-sc-row ' + m.role,
-                },
-                  React.createElement('div', { className: 'dsh-sc-meta' },
-                    React.createElement('span', null, m.role === 'user' ? '你' : '侧对话助手'),
-                    React.createElement('span', null, timeOf(m.time)),
-                  ),
-                  React.createElement('div', { className: 'dsh-sc-bubble' },
-                    m.thinking
-                      ? React.createElement('details', { className: 'dsh-sc-think' },
-                          React.createElement('summary', null, '思考过程'),
-                          React.createElement('div', { className: 'dsh-sc-think-body' }, m.thinking),
-                        )
-                      : null,
-                    m.blocks,
-                  ),
-                )),
+              : renderedMessages.map((m, index) => {
+                  const autoFold = typeof m.text === 'string' && m.text.length > 600
+                  const folded = index in collapsedMsgs ? collapsedMsgs[index] : autoFold
+                  return React.createElement('div', {
+                    key: index,
+                    className: 'dsh-sc-row ' + m.role + (folded ? ' folded' : ''),
+                  },
+                    React.createElement('div', { className: 'dsh-sc-meta' },
+                      React.createElement('span', null, m.role === 'user' ? '你' : '侧对话助手'),
+                      React.createElement('span', null, timeOf(m.time)),
+                      React.createElement('button', {
+                        className: 'dsh-sc-fold',
+                        title: folded ? '展开这条消息' : '折叠这条消息',
+                        onClick: () => setCollapsedMsgs((prev) => Object.assign({}, prev, { [index]: !folded })),
+                      }, folded ? '展开' : '折叠'),
+                    ),
+                    folded
+                      ? React.createElement('div', { className: 'dsh-sc-bubble dsh-sc-folded' },
+                          String(m.text || '').slice(0, 240) + ((m.text || '').length > 240 ? '…' : ''))
+                      : React.createElement('div', { className: 'dsh-sc-bubble' },
+                          m.thinking
+                            ? React.createElement('details', { className: 'dsh-sc-think' },
+                                React.createElement('summary', null, '思考过程'),
+                                React.createElement('div', { className: 'dsh-sc-think-body' }, m.thinking),
+                              )
+                            : null,
+                          m.blocks,
+                        ),
+                  )
+                }),
           )
         : React.createElement('div', { className: 'dsh-sc-msg' },
             React.createElement('div', { className: 'dsh-sc-empty' }, '从上方列表选择一条侧对话\n或点击「＋ 新建」开一条新的'))
