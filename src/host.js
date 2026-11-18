@@ -203,6 +203,28 @@ function createSideChatService(services, config) {
           : recordedSelection === undefined || headerSeq >= selectionSeq
             ? headerRoute
             : recordedSelection
+        // 列表预览：从会话事件里取最后一条真实对话文本，避免恢复后列表显示「还没有消息」
+        let restoredPreview = ''
+        for (let i = events.length - 1; i >= 0; i -= 1) {
+          const event = events[i]
+          if (!event) continue
+          if (event.type === 'assistant/message') {
+            const message = event.data && event.data.message
+            const text = textOf(message && message.content).trim()
+            if (text) {
+              restoredPreview = previewOf(text)
+              break
+            }
+          } else if (event.type === 'user/message') {
+            const source = event.data && event.data.source
+            if (!source || source.kind !== 'user') continue
+            const text = textOf(event.data && event.data.content).trim()
+            if (text) {
+              restoredPreview = previewOf(text)
+              break
+            }
+          }
+        }
         const handle = await agents.resume({
           resumeSessionId: id,
           ...resumeOptions === undefined ? {} : { agentOptions: resumeOptions },
@@ -262,7 +284,7 @@ function createSideChatService(services, config) {
           handle,
           updatedAt: Date.now(),
           bringingBack: false,
-          lastPreview: '',
+          lastPreview: restoredPreview,
           selection: undefined,
           inheritMode,
           restored: true,
