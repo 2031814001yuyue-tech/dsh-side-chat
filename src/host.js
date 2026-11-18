@@ -460,6 +460,28 @@ function createSideChatService(services, config) {
     }
   }
 
+  /**
+   * 侧会话在列表里「隐藏」= workspaceRegistry 归档；但 DSH 的 archived-session-gate
+   * 会拒绝「已归档会话」的 agent/pre-step（turn/end 直接 blocked），
+   * 所以发消息 / 总结前必须先 unarchive，跑完再 archive 回去。
+   */
+  async function unhideSession(entry) {
+    if (!workspaceRegistry || !entry) return
+    try {
+      if (typeof workspaceRegistry.unarchiveSession === 'function') await workspaceRegistry.unarchiveSession(entry.sessionId)
+    } catch (err) {
+      console.error('[side-chat] 取消归档失败（继续发送）', err)
+    }
+  }
+  async function hideSession(entry) {
+    if (!workspaceRegistry || !entry) return
+    try {
+      await workspaceRegistry.archiveSession(entry.sessionId)
+    } catch (err) {
+      console.error('[side-chat] 重新归档失败', err)
+    }
+  }
+
   /** 本插件接下的 user-questions/request（waterfall 监听）对应的待答问题。 */
   const pendingQuestionRequests = new Map()
 
@@ -817,6 +839,7 @@ function createSideChatService(services, config) {
     if (!trimmed) return { ok: false, error: '消息不能为空' }
     const sideAgent = agents.get(entry.sessionId)
     if (!sideAgent) return { ok: false, error: '侧对话 agent 不在线' }
+    await unhideSession(entry)
     sideAgent.send({
       id: 'side-msg-' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
       role: 'user',
@@ -1004,6 +1027,7 @@ function createSideChatService(services, config) {
     // B3 修复：先置位防重标志，再投递总结请求，消除并发窗口
     entry.status = 'running'
     entry.bringingBack = true
+    await unhideSession(entry)
     // 记录投递前的最大 seq：只接受之后新增的 assistant 文本作为总结
     let baselineSeq = -1
     try {
@@ -1095,6 +1119,10 @@ function createSideChatService(services, config) {
     if (!entry) return
     entry.status = status
     if (status === 'running') entry.error = null
+    else if (status !== 'running') {
+      // 回合结束后回收：重新归档（回到列表里隐藏的状态）
+      hideSession(entry)
+    }
     entry.updatedAt = Date.now()
   }
 

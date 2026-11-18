@@ -15,6 +15,7 @@
 - **列表/对话两段式**：默认停在对话列表，点条目进对话页；新建后直接进入新对话；归档后回列表。
 - **重命名**：列表项 ✎ 内联改名（回车/失焦提交、Esc 取消），走 `sessionTitle.rename` 或 `session/title`，重启后保留。
 - **停止**：对话页运行中出现「停止」按钮，调用 agent.cancel（等价主对话停止）。
+- **修复「发不出消息」（DSH 新版归档门槛）**：新版 DSH 的 `archived-session-gate` 会拒绝已归档会话的 `agent/pre-step`（turn/end 直接 `blocked`）。侧对话为隐藏而创建即归档，于是每个回合一开始就被拦下。现在发消息/带回总结前先 `unarchiveSession`，回合结束再 `archiveSession` 归档回隐藏态（回合运行期间该会话会短暂出现在会话列表里）。
 - **问答通道接入**：侧对话调用 `ask_user_question` 时，插件作为 `user-questions/request` waterfall 的应答者认领问题（只认领侧 agent，主对话的请求原样 `next()`），面板渲染交互卡片（问题/说明/选项/自定义输入/提交），提交后 resolve `{answers}` 让工具继续；对已经超时转 pending 的问题仍走 `userQuestions.answer()` 续答。
 - **主对话状态提示**：会话标题栏的 ⤳ 按钮上显示运行中侧对话数量角标。
 - **视觉**：列表卡片化、气泡/输入区/步骤区排版与滚动条细化（由 Haiku 子代理完成，纯 CSS）。
