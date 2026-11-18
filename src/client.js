@@ -489,6 +489,8 @@ return {
       const [collapsedMsgs, setCollapsedMsgs] = React.useState({})
       const [traceCollapsed, setTraceCollapsed] = React.useState(false)
       const msgBoxRef = React.useRef(null)
+      // 改名去重：回车提交后输入框卸载会再触发一次 blur，避免重复 RPC
+      const renameGuardRef = React.useRef(null)
       const [width, setWidth] = React.useState(380)
       const [dragging, setDragging] = React.useState(false)
       const dragRef = React.useRef(null)
@@ -537,7 +539,8 @@ return {
               c.status === res.chats[i].status &&
               c.error === res.chats[i].error &&
               c.lastPreview === res.chats[i].lastPreview &&
-              c.updatedAt === res.chats[i].updatedAt)) {
+              c.updatedAt === res.chats[i].updatedAt &&
+              JSON.stringify(c.title) === JSON.stringify(res.chats[i].title))) {
               return prev
             }
             return res.chats
@@ -720,6 +723,11 @@ return {
         return /40[45]/.test(text) ? '改名失败：宿主还没加载改名功能，请完全退出并重开 App' : text.startsWith('改名失败') ? text : '改名失败：' + text
       }
       const commitRename = async (id) => {
+        if (renameGuardRef.current === id) return
+        renameGuardRef.current = id
+        setTimeout(() => {
+          if (renameGuardRef.current === id) renameGuardRef.current = null
+        }, 800)
         const title = String(renameText || '').trim()
         setRenamingId(null)
         if (!title) return

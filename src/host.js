@@ -32,6 +32,10 @@ function createSideChatService(services, config) {
   const openSignals = new Map()
   /** 已做过「重启后恢复」扫描的主会话（懒执行，一次即可）。 */
   const restoredFor = new Set()
+  /** 进行中的恢复 Promise：并发 RPC 共享同一个，避免第二个拿到半空的注册表。 */
+  const restoringFor = new Map()
+  /** 本次进程内被用户归档掉的侧会话：恢复时跳过（客户端 exclude 名单落盘前的兜底）。 */
+  const closedByUser = new Set()
   /** 持久化会话清单缓存（避免每次 state 轮询都全量扫一遍）。 */
   let corpusCache = { at: 0, records: [] }
 
@@ -113,6 +117,19 @@ function createSideChatService(services, config) {
    */
   async function restoreFor(mainSessionId, exclude = []) {
     if (!mainSessionId || restoredFor.has(mainSessionId)) return
+    const inflight = restoringFor.get(mainSessionId)
+    if (inflight) return inflight
+    const task = restoreOnce(mainSessionId, exclude)
+    restoringFor.set(mainSessionId, task)
+    try {
+      await task
+    } finally {
+      restoringFor.delete(mainSessionId)
+    }
+  }
+
+  async function restoreOnce(mainSessionId, exclude = []) {
+    if (!mainSessionId || restoredFor.has(mainSessionId)) return
     // 先占位：并发 RPC（右栏 + 浮层 state）同时进来时只允许一个扫描/恢复，避免同一会话被 resume 两次
     restoredFor.add(mainSessionId)
     const excluded = new Set(exclude.filter((id) => typeof id === 'string'))
@@ -146,7 +163,7 @@ function createSideChatService(services, config) {
           snapshot = undefined
         }
         const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events : []
-        if (excluded.has(id)) continue
+        if (excluded.has(id) || closedByUser.has(id)) continue
         // 路由：优先最近一次 request/header；只有 model/selection 没跑过请求的会话回退到它
         // 路由：request/header 与 model/selection 都记录 seq，取较新的那条
         // （用户切过模型但还没跑下一轮就重启时，model/selection 才是最新的）
@@ -466,19 +483,33 @@ function createSideChatService(services, config) {
    * 所以发消息 / 总结前必须先 unarchive，跑完再 archive 回去。
    */
   async function unhideSession(entry) {
-    if (!workspaceRegistry || !entry) return
+    if (!workspaceRegistry || !entry) return true
+    if (typeof workspaceRegistry.unarchiveSession !== 'function') return true
     try {
-      if (typeof workspaceRegistry.unarchiveSession === 'function') await workspaceRegistry.unarchiveSession(entry.sessionId)
+      await workspaceRegistry.unarchiveSession(entry.sessionId)
+      return true
     } catch (err) {
-      console.error('[side-chat] 取消归档失败（继续发送）', err)
+      // 不吞错：归档门会把这一步直接 reject，消息会被 claim 后丢弃，必须让调用方知道
+      console.error('[side-chat] 取消归档失败', err)
+      return false
     }
   }
-  async function hideSession(entry) {
-    if (!workspaceRegistry || !entry) return
+  async function hideSession(entry, attempt = 0) {
+    if (!workspaceRegistry || !entry || typeof workspaceRegistry.archiveSession !== 'function') return
+    if (entry.hideTimer) return
     try {
       await workspaceRegistry.archiveSession(entry.sessionId)
     } catch (err) {
-      console.error('[side-chat] 重新归档失败', err)
+      // 会话还在 running 时会抛 WorkspaceActiveSessionError：稍后重试，避免一直露出在会话列表里
+      if (attempt < 5) {
+        entry.hideTimer = setTimeout(() => {
+          entry.hideTimer = undefined
+          hideSession(entry, attempt + 1)
+        }, 800 * (attempt + 1))
+        if (typeof entry.hideTimer.unref === 'function') entry.hideTimer.unref()
+      } else {
+        console.error('[side-chat] 重新归档失败（放弃）', err)
+      }
     }
   }
 
@@ -839,7 +870,7 @@ function createSideChatService(services, config) {
     if (!trimmed) return { ok: false, error: '消息不能为空' }
     const sideAgent = agents.get(entry.sessionId)
     if (!sideAgent) return { ok: false, error: '侧对话 agent 不在线' }
-    await unhideSession(entry)
+    if (!await unhideSession(entry)) return { ok: false, error: '这条侧对话暂时无法取消归档，消息未发送（请稍后重试）' }
     sideAgent.send({
       id: 'side-msg-' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
       role: 'user',
@@ -1027,7 +1058,11 @@ function createSideChatService(services, config) {
     // B3 修复：先置位防重标志，再投递总结请求，消除并发窗口
     entry.status = 'running'
     entry.bringingBack = true
-    await unhideSession(entry)
+    if (!await unhideSession(entry)) {
+      entry.status = 'idle'
+      entry.bringingBack = false
+      return { ok: false, error: '这条侧对话暂时无法取消归档，稍后再试' }
+    }
     // 记录投递前的最大 seq：只接受之后新增的 assistant 文本作为总结
     let baselineSeq = -1
     try {
@@ -1096,6 +1131,7 @@ function createSideChatService(services, config) {
         // ignore
       }
     }
+    closedByUser.add(sideId)
     sideChats.delete(sideId)
     if (workspaceRegistry) {
       try {
@@ -1135,15 +1171,26 @@ function createSideChatService(services, config) {
   }
 
   /** 插件停止时清理所有侧对话。 */
-  function disposeAll() {
-    for (const entry of sideChats.values()) {
+  async function disposeAll() {
+    const pending = [...sideChats.values()]
+    sideChats.clear()
+    for (const entry of pending) {
+      if (entry.hideTimer) clearTimeout(entry.hideTimer)
       try {
-        entry.handle.dispose()
+        await entry.handle.dispose()
       } catch (err) {
         console.error('[side-chat] 清理失败', err)
       }
     }
-    sideChats.clear()
+    // 未答的问答请求一并 reject，避免工具悬挂
+    for (const item of [...pendingQuestionRequests.values()]) {
+      try {
+        item.cleanup()
+        item.reject(new Error('插件已停止'))
+      } catch (err) {
+        // ignore
+      }
+    }
   }
 
   return { open, send, state, events, bringBack, close, stop, answer, questionRequest, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
