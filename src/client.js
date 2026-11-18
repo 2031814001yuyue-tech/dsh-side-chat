@@ -180,6 +180,27 @@ const PANEL_CSS = `
  */
 const lastOpenSignals = new Map()
 
+    // 已归档的侧对话 id（localStorage）：重启恢复时传给宿主跳过它们
+    const readArchivedIds = () => {
+      try {
+        const raw = window.localStorage && window.localStorage.getItem('dsh-sidechat-archived')
+        const list = raw ? JSON.parse(raw) : []
+        return Array.isArray(list) ? list.filter((id) => typeof id === 'string').slice(-400) : []
+      } catch (err) {
+        return []
+      }
+    }
+    const rememberArchivedId = (id) => {
+      try {
+        if (!window.localStorage || typeof id !== 'string') return
+        const list = readArchivedIds().filter((x) => x !== id)
+        list.push(id)
+        window.localStorage.setItem('dsh-sidechat-archived', JSON.stringify(list.slice(-400)))
+      } catch (err) {
+        // 存不下就算了：最多重启后又恢复出来
+      }
+    }
+
 /** 面板开关/最小化状态 store（发布订阅），供 toggle 按钮与面板共享。 */
 function createPanelStore() {
   let open = false
@@ -457,6 +478,8 @@ return {
       const [selectedId, setSelectedId] = React.useState(null)
       const [messages, setMessages] = React.useState([])
       const [input, setInput] = React.useState('')
+      // 发送中标志：防回车连击/回车+按钮重复发同一段
+      const [sending, setSending] = React.useState(false)
       const [notice, setNotice] = React.useState('')
       const [bringingBack, setBringingBack] = React.useState(false)
       // 模型：可选目录按 provider 分组；nextSelection 只影响下一条新建的侧对话
@@ -504,27 +527,6 @@ return {
         const at = key.indexOf('::')
         if (at <= 0) return undefined
         return { provider: key.slice(0, at), model: key.slice(at + 2) }
-      }
-
-      // 已归档的侧对话 id（localStorage）：重启恢复时传给宿主跳过它们
-      const readArchivedIds = () => {
-        try {
-          const raw = window.localStorage && window.localStorage.getItem('dsh-sidechat-archived')
-          const list = raw ? JSON.parse(raw) : []
-          return Array.isArray(list) ? list.filter((id) => typeof id === 'string').slice(-400) : []
-        } catch (err) {
-          return []
-        }
-      }
-      const rememberArchivedId = (id) => {
-        try {
-          if (!window.localStorage || typeof id !== 'string') return
-          const list = readArchivedIds().filter((x) => x !== id)
-          list.push(id)
-          window.localStorage.setItem('dsh-sidechat-archived', JSON.stringify(list.slice(-400)))
-        } catch (err) {
-          // 存不下就算了：最多重启后又恢复出来
-        }
       }
 
       const refreshState = React.useCallback(async () => {
@@ -623,6 +625,12 @@ return {
           box.scrollTop = box.scrollHeight
         }
       }, [messages, selectedId, isOpen, isMinimized])
+
+      // 切到别的侧对话时清掉折叠状态（否则 A 里折叠的第 3 条会在 B 里也折叠）
+      React.useEffect(() => {
+        setCollapsedMsgs({})
+        setTraceCollapsed(false)
+      }, [selectedId])
 
       // 对话页但选中项已消失（被归档/关闭）时退回列表；刚新建、状态还没刷新到的 id 先放行
       React.useEffect(() => {
@@ -806,7 +814,8 @@ return {
 
       const send = async () => {
         const text = input.trim()
-        if (!text || !selectedId) return
+        if (!text || !selectedId || sending) return
+        setSending(true)
         setNotice('')
         try {
           const res = await host.call('sidechat/send', { mainSessionId: sessionId, id: selectedId, text })
@@ -815,6 +824,8 @@ return {
           refreshEvents()
         } catch (err) {
           setNotice('发送失败：' + String(err))
+        } finally {
+          setSending(false)
         }
       }
 

@@ -174,7 +174,7 @@ function createSideChatService(services, config) {
         for (let i = events.length - 1; i >= 0; i -= 1) {
           const event = events[i]
           if (!event) continue
-          const seq = typeof event.seq === 'number' ? event.seq : i
+          const seq = i
           if (event.type === 'request/header' && headerRoute === undefined) {
             const config = event.data && event.data.header && event.data.header.config
             if (config && config.provider && config.model) {
@@ -534,7 +534,7 @@ function createSideChatService(services, config) {
       multiSelect: question.multiSelect === true,
       options: (Array.isArray(question.options) ? question.options : []).map((option) => ({
         label: String((option && (option.label || option.value)) || ''),
-        ...option && option.description === undefined ? {} : { description: String(option.description) },
+        ...option && option.description !== undefined ? { description: String(option.description) } : {},
       })).filter((option) => option.label),
     })).filter((question) => question.id)
     if (questions.length === 0) return next()
@@ -543,7 +543,6 @@ function createSideChatService(services, config) {
       pendingQuestionRequests.set(key, item)
       const cleanup = () => {
         pendingQuestionRequests.delete(key)
-        if (entry.questionKey === key) entry.questionKey = null
         bumpVersion()
       }
       item.cleanup = cleanup
@@ -554,7 +553,6 @@ function createSideChatService(services, config) {
         }, { once: true })
       }
     })
-    entry.questionKey = key
     entry.updatedAt = Date.now()
     bumpVersion()
     return promise
@@ -562,8 +560,11 @@ function createSideChatService(services, config) {
 
   /** 当前等待回答的问题（优先本插件接下的请求，其次 session projection 里可续答的）。 */
   function pendingQuestions(entry) {
-    const owned = entry.questionKey ? pendingQuestionRequests.get(entry.questionKey) : undefined
-    if (owned) return [{ callId: owned.key, questions: owned.questions }]
+    const owned = []
+    for (const item of pendingQuestionRequests.values()) {
+      if (item.entry === entry) owned.push({ callId: item.key, questions: item.questions })
+    }
+    if (owned.length) return owned
     const service = services.userQuestions
     if (!service || typeof service.continued !== 'function') return []
     const sideAgent = agents.get(entry.sessionId)
@@ -583,7 +584,7 @@ function createSideChatService(services, config) {
         multiSelect: question.multiSelect === true,
         options: (Array.isArray(question.options) ? question.options : []).map((option) => ({
           label: String((option && (option.label || option.value)) || ''),
-          ...option && option.description === undefined ? {} : { description: String(option.description) },
+          ...option && option.description !== undefined ? { description: String(option.description) } : {},
         })).filter((option) => option.label),
       })).filter((question) => question.id),
     })).filter((item) => item.callId && item.questions.length)
@@ -608,6 +609,7 @@ function createSideChatService(services, config) {
         selected: Array.isArray(item.selected) ? item.selected.map((value) => String(value)) : [],
         ...item.custom === undefined || item.custom === '' ? {} : { custom: String(item.custom) },
       }))
+    if (pending && pending.entry !== entry) return { ok: false, error: '该问题不属于这条侧对话' }
     if (pending) {
       const owned = batchFor(answers)
       if (owned.length === 0) return { ok: false, error: '参数缺失' }
@@ -615,6 +617,8 @@ function createSideChatService(services, config) {
       pending.resolve({ answers: owned })
       return { ok: true }
     }
+    // 续答（超时转 pending）会被 steer 成新回合：必须先取消归档，否则被归档门拦掉
+    if (!await unhideSession(entry)) return { ok: false, error: '暂时无法取消归档，回答未提交' }
     const batch = answers
       .filter((item) => item && typeof item.id === 'string')
       .map((item) => ({
@@ -639,9 +643,9 @@ function createSideChatService(services, config) {
     if (entry.bringingBack) return { ok: false, error: '正在带回中，稍后再试' }
     const sideAgent = agents.get(entry.sessionId)
     if (!sideAgent) return { ok: false, error: '侧对话不在线' }
-    // 先把待答问题拒掉，避免工具继续等答复
-    if (entry.questionKey && pendingQuestionRequests.has(entry.questionKey)) {
-      const pending = pendingQuestionRequests.get(entry.questionKey)
+    // 先把这条侧对话的待答问题全部拒掉，避免工具继续等答复
+    for (const pending of [...pendingQuestionRequests.values()]) {
+      if (pending.entry !== entry) continue
       pending.cleanup()
       try {
         pending.reject(new Error('用户停止了这一轮'))
@@ -651,14 +655,10 @@ function createSideChatService(services, config) {
     }
     if (entry.status !== 'running' || typeof sideAgent.cancel !== 'function') return { ok: true, stopped: false }
     try {
-      // 与 DSH 自己的停止一致：传 aborted 原因，turn/end 会记录
-      sideAgent.cancel({ kind: 'aborted' })
+      // DSH 的 cancel cause 只接受 user/parent/hook/disposed（'aborted' 会让 turn/end 写成 reason:null）
+      sideAgent.cancel({ kind: 'user' })
     } catch (err) {
-      try {
-        sideAgent.cancel(new Error('用户停止'))
-      } catch (inner) {
-        return { ok: false, error: '停止失败：' + messageOf(inner) }
-      }
+      return { ok: false, error: '停止失败：' + messageOf(err) }
     }
     entry.status = 'idle'
     entry.updatedAt = Date.now()
@@ -1050,6 +1050,7 @@ function createSideChatService(services, config) {
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
     if (entry.bringingBack) return { ok: false, error: '正在带回中，请稍候' }
+    if (entry.status === 'running') return { ok: false, error: '侧对话正在运行，等这一轮结束再带回' }
     const mainAgent = agents.get(mainSessionId)
     if (!mainAgent) return { ok: false, error: '主会话不在线' }
     if (mainAgent.status === 'running') return { ok: false, error: 'main-busy' }
@@ -1071,7 +1072,9 @@ function createSideChatService(services, config) {
         if (event && typeof event.seq === 'number' && event.seq > baselineSeq) baselineSeq = event.seq
       }
     } catch (err) {
-      baselineSeq = -1
+      entry.status = 'idle'
+      entry.bringingBack = false
+      return { ok: false, error: '读取侧会话失败，无法确认总结' }
     }
     try {
       sideAgent.send({
@@ -1122,14 +1125,18 @@ function createSideChatService(services, config) {
     await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
-    if (entry.questionKey && pendingQuestionRequests.has(entry.questionKey)) {
-      const pending = pendingQuestionRequests.get(entry.questionKey)
+    for (const pending of [...pendingQuestionRequests.values()]) {
+      if (pending.entry !== entry) continue
       pending.cleanup()
       try {
         pending.reject(new Error('侧对话已归档'))
       } catch (err) {
         // ignore
       }
+    }
+    if (entry.hideTimer) {
+      clearTimeout(entry.hideTimer)
+      entry.hideTimer = undefined
     }
     closedByUser.add(sideId)
     sideChats.delete(sideId)
