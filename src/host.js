@@ -544,11 +544,14 @@ function createSideChatService(services, config) {
     if (!autoHide || isFocused(entry)) return
     if (entry.hideTimer) return
     try {
+      entry.hideError = undefined
+      entry.hideTries = (entry.hideTries || 0) + 1
       await workspaceRegistry.archiveSession(entry.sessionId)
       entry.hidden = true
       // 归档在途时用户又点进来了（focus 看到的还是旧的 hidden 标志）：补一次取消归档，别让输入框对着已归档会话
       if (isFocused(entry) || !autoHide) await unhideSession(entry)
     } catch (err) {
+      entry.hideError = (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err))
       // 会话还在 running 时会抛 WorkspaceActiveSessionError：稍后重试，避免一直露出在会话列表里
       if (attempt < 5) {
         entry.hideTimer = setTimeout(() => {
@@ -1004,6 +1007,9 @@ function createSideChatService(services, config) {
         selection: selectionOf(entry),
         inherit: Boolean(entry.inheritMode),
         inheritMode: entry.inheritMode || null,
+        // 诊断：归档状态（排查「离开后没重新隐藏」用）
+        hidden: entry.hidden, hideError: entry.hideError || null, hideTries: entry.hideTries || 0,
+        focused: isFocused(entry), hideTimer: Boolean(entry.hideTimer), agentStatus: entry.status,
       })
     }
     chats.sort((a, b) => a.updatedAt - b.updatedAt)
