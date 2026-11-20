@@ -48,6 +48,7 @@ const PANEL_CSS = `
 .dsh-sc-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .dsh-sc-head>.dsh-sc-btn:not(.primary):not(.dsh-sc-back){width:26px;padding:0;font-size:13px}
 .dsh-sc-back{width:26px;padding:0;font-size:14px}
+.dsh-sc-head>.dsh-sc-btn.wide:not(.primary):not(.dsh-sc-back){width:auto;padding:0 8px;font-size:12px}
 .dsh-sc-btn.primary{height:26px;padding:0 12px;background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color);font-weight:500}
 .dsh-sc-btn.primary:hover:not(:disabled){filter:brightness(1.08);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-color)}
 .dsh-sc-select{flex:none;height:26px;max-width:120px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:0 22px 0 8px;font:inherit;font-size:12px;cursor:pointer;outline:none;transition:border-color .12s ease}
@@ -453,6 +454,8 @@ return {
      */
     function NativeChat(p) {
       const { tabProps, mainSessionId, chatId, onFail } = p
+      // onFail(msg, permanent)：permanent=true 表示这个页面里原生组件本身不可用（retain 抛错、没渲染出来）；
+      // 否则只是这条对话这次打开失败（网络抖动、未知侧对话），只对它退回自绘视图。
       const [ready, setReady] = React.useState(false)
       const [reference, setReference] = React.useState(null)
       // 打开 = 取消归档（原生输入框直接发给会话，归档门会拦）+ 每 2s 续期；离开 = 通知宿主归档回去
@@ -464,17 +467,21 @@ return {
             if (!alive) return
             if (first) {
               if (res && res.ok) setReady(true)
-              else onFail((res && res.error) || '无法打开这条侧对话')
+              else onFail((res && res.error) || '无法打开这条侧对话', false)
             }
           } catch (err) {
-            if (alive && first) onFail('无法打开这条侧对话：' + String(err))
+            if (alive && first) onFail('无法打开这条侧对话：' + String(err), false)
           }
         }
         beat(true)
         const timer = setInterval(() => beat(false), 2000)
+        // 窗口被遮挡/休眠后浏览器会给定时器降频；回到前台立刻补一次心跳，别让宿主以为我们已离开
+        const onVisible = () => { if (!document.hidden) beat(false) }
+        document.addEventListener('visibilitychange', onVisible)
         return () => {
           alive = false
           clearInterval(timer)
+          document.removeEventListener('visibilitychange', onVisible)
           host.call('sidechat/focus', { mainSessionId, id: chatId, leave: true }).catch(() => {})
         }
       }, [mainSessionId, chatId])
@@ -485,7 +492,7 @@ return {
           held = getSessions().retain(chatId, { source: 'sidebarChat' })
           if (held && held.ready && typeof held.ready.catch === 'function') held.ready.catch(() => {})
         } catch (err) {
-          onFail('原生对话视图不可用：' + String(err))
+          onFail('原生对话视图不可用：' + String(err), true)
           return undefined
         }
         setReference(held)
@@ -507,8 +514,21 @@ return {
           return React.createElement('div', { className: 'dsh-sc-error' }, '原生对话视图出错：' + String((err && err.message) || err))
         }
       }, [reference, renderFactorySlot])
+      // 渲染探针：DSH 工厂改名/下线时 renderFactorySlot 不会抛错，只会渲染成空白；
+      // 挂载 3 秒后确认容器里真有原生对话内容（data-conversation-content），没有就退回自绘视图。
+      const boxRef = React.useRef(null)
+      React.useEffect(() => {
+        if (!reference) return undefined
+        const t = setTimeout(() => {
+          const box = boxRef.current
+          if (box && typeof box.querySelector === 'function' && !box.querySelector('[data-conversation-content]')) {
+            onFail('原生对话组件没有渲染出来（DSH 版本可能不兼容）', true)
+          }
+        }, 3000)
+        return () => clearTimeout(t)
+      }, [reference])
       if (!reference) return React.createElement('div', { className: 'dsh-sc-native-loading' }, '正在打开…')
-      return React.createElement('div', { className: 'dsh-sc-native' },
+      return React.createElement('div', { className: 'dsh-sc-native', ref: boxRef },
         React.createElement(tabProps.SessionProvider, { session: reference }, content))
     }
 
@@ -522,7 +542,7 @@ return {
         return timer.interval(async () => {
           if (!sessionId) return
           try {
-            const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds() })
+            const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds(), autoHide: readAutoHide() })
             if (res && Array.isArray(res.chats)) setActiveCount(res.chats.filter((c) => c && c.status === 'running').length)
             if (res && typeof res.openSignal === 'number') {
               const prev = lastOpenSignals.get(sessionId)
@@ -597,6 +617,7 @@ return {
       const [view, setView] = React.useState('list')
       const [autoHide, setAutoHide] = React.useState(readAutoHide)
       const [nativeFailed, setNativeFailed] = React.useState(nativeBroken)
+      const [failedChats, setFailedChats] = React.useState({})
       // 刚新建、state 还没轮询到的对话 id（避免被「选中项不存在」的保护逻辑弹回列表）
       const [pendingChatId, setPendingChatId] = React.useState(null)
       // 改名：列表项上点 ✎ 进入内联编辑，回车/失焦提交，Esc 取消
@@ -1072,7 +1093,7 @@ return {
       const nativeMissing = !inline ? '' : !getSessions() ? 'sessions 服务'
         : !props.SessionProvider ? 'SessionProvider' : typeof props.renderFactorySlot !== 'function' ? 'renderFactorySlot' : ''
       const nativeOk = inline && !nativeFailed && !nativeMissing
-      const useNative = nativeOk && view === 'chat' && Boolean(selectedId)
+      const useNative = nativeOk && view === 'chat' && Boolean(selectedId) && !failedChats[selectedId]
       nativeActiveRef.current = useNative
       const head = React.createElement('div', { className: 'dsh-sc-head' },
         view === 'chat'
@@ -1095,6 +1116,20 @@ return {
             ? null
             : React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
         ),
+        useNative
+          ? React.createElement(React.Fragment, null,
+              React.createElement('button', {
+                className: 'dsh-sc-btn wide',
+                onClick: bringBack,
+                disabled: bringingBack,
+                title: '让侧对话总结自己的内容，以折叠提示行注入主对话',
+              }, bringingBack ? '总结中…' : '带回主对话'),
+              React.createElement('button', {
+                className: 'dsh-sc-btn wide',
+                onClick: () => closeChat(selectedId),
+                title: '归档该侧对话（按 DSH 归档逻辑：停止运行并进归档列表，可在归档里找回）',
+              }, '归档'))
+          : null,
         view === 'chat' ? null : inheritPicker,
         useNative ? null : picker,
         useNative ? null : effortPicker,
@@ -1403,10 +1438,16 @@ return {
             tabProps: props,
             mainSessionId: sessionId,
             chatId: selectedId,
-            onFail: (msg) => {
-              nativeBroken = true
-              setNativeFailed(true)
-              host.call('sidechat/focus', { mainSessionId: sessionId, id: selectedId, native: false }).catch(() => {})
+            onFail: (msg, permanent) => {
+              const failedId = selectedId
+              if (permanent) {
+                nativeBroken = true
+                setNativeFailed(true)
+              } else {
+                setFailedChats((cur) => Object.assign({}, cur, { [failedId]: true }))
+              }
+              // 自绘视图接管：问答由本插件接，不再让给 DSH 原生卡片
+              host.call('sidechat/focus', { mainSessionId: sessionId, id: failedId, native: false, leave: true }).catch(() => {})
               setNotice(msg)
             },
           })
@@ -1503,14 +1544,16 @@ return {
             icon: SideChatGlyph,
           }],
         }), 'side-chat: sidebar tab type')
-        // 带上 sidebar.chat.conversation 子席位（DSH 子智能体插件声明），拿到 renderSlot 才能嵌原生对话；
-        // 子席位不存在时退回不带子席位的注册，面板照旧用自绘视图。
+        // 声明一个私有子席位以获得 SessionProvider（原生对话要用）；
+        // 注册被拒时退回不带子席位的注册，面板照旧用自绘视图。
         slots.inject('sidebar.right.pane.tab', () => {
           try {
             return slots.register({
               name: 'sidebar.right.pane.tab',
               key: SIDEBAR_TAB_KIND,
-              children: { 'sidebar.chat.conversation': { kind: 'single', scope: 'session' } },
+              // 不能用 DSH 自带的 'sidebar.chat.conversation'：槽位名全局唯一，重名声明会让后注册的一方抛错，
+              // 连带弄坏官方「子智能体右栏聊天」。这里的子席位只是用来换取 SessionProvider，从不渲染。
+              children: { 'dsh-side-chat.unused': { kind: 'single', scope: 'session' } },
             }, SideChatTabBody)
           } catch (err) {
             console.error('[side-chat] 原生对话子席位不可用，使用自绘视图', err)

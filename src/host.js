@@ -31,7 +31,8 @@ function createSideChatService(services, config) {
   // 由客户端勾选框经 state/open 传入。
   let autoHide = true
   // 客户端正用 DSH 原生对话组件显示侧对话时，问答交给原生卡片，不再由本插件接管。
-  let nativeView = false
+  // 默认 true：右栏就是原生视图；只有原生组件整体不可用（客户端 onFail）才置 false，让本插件的自绘视图接管问答。
+  let nativeView = true
   // 正在被客户端打开的侧对话：心跳续期，过期视为已离开，期间不重新归档。
   const FOCUS_MS = 6000
   /** 每主会话的 openSignal（open() 时递增，state() 按主会话返回）：
@@ -123,9 +124,11 @@ function createSideChatService(services, config) {
    * 重新挂进面板并再次归档（不污染会话列表）。失败的单条只记日志，不影响其它。
    */
   async function restoreFor(mainSessionId, exclude = []) {
-    if (!mainSessionId || restoredFor.has(mainSessionId)) return
+    if (!mainSessionId) return
+    // 先看有没有正在进行的恢复：restoreOnce 一开头就把 restoredFor 占位了，若先判 restoredFor，并发调用会拿到半空的注册表
     const inflight = restoringFor.get(mainSessionId)
     if (inflight) return inflight
+    if (restoredFor.has(mainSessionId)) return
     const task = restoreOnce(mainSessionId, exclude)
     restoringFor.set(mainSessionId, task)
     try {
@@ -295,14 +298,20 @@ function createSideChatService(services, config) {
           selection: undefined,
           inheritMode,
           restored: true,
-          hidden: false,
+          // 磁盘上它多半还是归档状态（上次运行时藏起来的），先按「已归档」记；下面按 autoHide 校正
+          hidden: true,
         })
-        if (workspaceRegistry && autoHide) {
+        const restoredEntry = sideChats.get(id)
+        if (workspaceRegistry && restoredEntry) {
           try {
-            await workspaceRegistry.archiveSession(id)
-            sideChats.get(id).hidden = true
+            if (autoHide) {
+              await workspaceRegistry.archiveSession(id)
+              restoredEntry.hidden = true
+            } else {
+              await unhideSession(restoredEntry)
+            }
           } catch (err) {
-            console.error('[side-chat] 恢复后归档失败', err)
+            console.error('[side-chat] 恢复后校正归档状态失败', err)
           }
         }
       } catch (err) {
@@ -537,6 +546,8 @@ function createSideChatService(services, config) {
     try {
       await workspaceRegistry.archiveSession(entry.sessionId)
       entry.hidden = true
+      // 归档在途时用户又点进来了（focus 看到的还是旧的 hidden 标志）：补一次取消归档，别让输入框对着已归档会话
+      if (isFocused(entry) || !autoHide) await unhideSession(entry)
     } catch (err) {
       // 会话还在 running 时会抛 WorkspaceActiveSessionError：稍后重试，避免一直露出在会话列表里
       if (attempt < 5) {
@@ -966,7 +977,8 @@ function createSideChatService(services, config) {
       return { ok: true }
     }
     entry.focusUntil = Date.now() + FOCUS_MS
-    if (entry.hidden !== false && !await unhideSession(entry)) {
+    // 每次心跳都调：unarchive 对没归档的会话是空操作，且排在已入队的 archive 之后，不依赖可能滞后的 hidden 标志
+    if (!await unhideSession(entry)) {
       return { ok: false, error: '暂时无法取消归档' }
     }
     return { ok: true }
