@@ -1010,6 +1010,7 @@ function createSideChatService(services, config) {
         // 诊断：归档状态（排查「离开后没重新隐藏」用）
         hidden: entry.hidden, hideError: entry.hideError || null, hideTries: entry.hideTries || 0,
         focused: isFocused(entry), hideTimer: Boolean(entry.hideTimer), agentStatus: entry.status,
+        registry: Boolean(workspaceRegistry && typeof workspaceRegistry.available === 'function' ? workspaceRegistry.available() : workspaceRegistry),
       })
     }
     chats.sort((a, b) => a.updatedAt - b.updatedAt)
@@ -1323,7 +1324,18 @@ return {
       sessions: ctx.get('sessions'),
       sessionQuery: ctx.get('sessionQuery'),
       commands: ctx.get('commands'),
-      workspaceRegistry: ctx.get('workspaceRegistry'),
+      // workspaceRegistry（dsh-workspace）可能在本插件之后才就绪：每次用到时再取，取不到就当没有（跳过归档）
+      workspaceRegistry: {
+        archiveSession: (...args) => {
+          const registry = ctx.get('workspaceRegistry')
+          return registry && typeof registry.archiveSession === 'function' ? registry.archiveSession(...args) : undefined
+        },
+        unarchiveSession: (...args) => {
+          const registry = ctx.get('workspaceRegistry')
+          return registry && typeof registry.unarchiveSession === 'function' ? registry.unarchiveSession(...args) : undefined
+        },
+        available: () => Boolean(ctx.get('workspaceRegistry')),
+      },
       agentPresets: ctx.get('agentPresets'),
       // 可选：模型目录（换模型用）。缺失时面板不显示模型选择器。
       llm: ctx.get('llm'),
