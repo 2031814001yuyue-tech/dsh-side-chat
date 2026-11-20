@@ -390,7 +390,8 @@ return {
     // 动态路径有 cordis timer 服务；npm 静态路径没有，回退到 setInterval 实现
     const timer = ctx.get('timer') || createTimerFallback()
     const slots = ctx.get('slots')
-    const sessionsSvc = ctx.get('sessions')
+    // sessions 服务可能比本插件晚就绪：用到时再取，别在 apply 里一次定死
+    const getSessions = () => ctx.get('sessions') || ctx.sessions
     if (!slots) return
     styles.insert(PANEL_CSS)
 
@@ -478,7 +479,7 @@ return {
         if (!ready) return undefined
         let held
         try {
-          held = sessionsSvc.retain(chatId, { source: 'sidebarChat' })
+          held = getSessions().retain(chatId, { source: 'sidebarChat' })
           if (held && held.ready && typeof held.ready.catch === 'function') held.ready.catch(() => {})
         } catch (err) {
           onFail('原生对话视图不可用：' + String(err))
@@ -491,9 +492,17 @@ return {
         }
       }, [ready, chatId])
       if (!reference) return React.createElement('div', { className: 'dsh-sc-native-loading' }, '正在打开…')
+      let content
+      try {
+        // 直接渲染 DSH 的 conversation.content（与子智能体右栏聊天同款）；固定显示 chat 视图
+        content = tabProps.renderFactorySlot('conversation.content', { variant: 'embedded', phase: 'active', hero: false }, {
+          slots: { views: (vp) => vp.renderSlot('conversation.session', { view: 'chat' }) },
+        })
+      } catch (err) {
+        content = React.createElement('div', { className: 'dsh-sc-error' }, '原生对话视图出错：' + String((err && err.message) || err))
+      }
       return React.createElement('div', { className: 'dsh-sc-native' },
-        React.createElement(tabProps.SessionProvider, { session: reference },
-          tabProps.renderSlot('sidebar.chat.conversation', {})))
+        React.createElement(tabProps.SessionProvider, { session: reference }, content))
     }
 
     function SideToggle(props) {
@@ -1050,8 +1059,9 @@ return {
             : selected.title && typeof selected.title.title === 'string' ? selected.title.title : '侧对话')
         : '侧边对话'
       // 右栏里且原生组件可用 → 对话页用 DSH 原生对话视图；否则沿用自绘视图
-      const nativeOk = inline && !nativeFailed && Boolean(sessionsSvc)
-        && typeof props.SessionProvider === 'function' && typeof props.renderSlot === 'function'
+      const nativeMissing = !inline ? '' : !getSessions() ? 'sessions 服务'
+        : !props.SessionProvider ? 'SessionProvider' : typeof props.renderFactorySlot !== 'function' ? 'renderFactorySlot' : ''
+      const nativeOk = inline && !nativeFailed && !nativeMissing
       const useNative = nativeOk && view === 'chat' && Boolean(selectedId)
       const head = React.createElement('div', { className: 'dsh-sc-head' },
         view === 'chat'
@@ -1393,7 +1403,9 @@ return {
 
       const noticeBar = notice
         ? React.createElement('div', { className: isErrorText(notice) ? 'dsh-sc-error' : 'dsh-sc-notice' }, notice)
-        : null
+        : (inline && view === 'chat' && nativeMissing
+            ? React.createElement('div', { className: 'dsh-sc-notice' }, '原生对话视图未启用：当前环境缺少 ' + nativeMissing)
+            : null)
 
       const selectedError = selected && selected.error
         ? React.createElement('div', { className: 'dsh-sc-error' }, '该侧对话出错：' + selected.error)
