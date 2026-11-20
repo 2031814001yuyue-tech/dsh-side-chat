@@ -27,6 +27,13 @@ function createSideChatService(services, config) {
   const sideChats = new Map()
   let counter = 0
   let version = 0
+  // 自动隐藏：开 = 侧会话靠「归档」藏在会话列表之外（默认）；关 = 不归档，原生输入框可直接用。
+  // 由客户端勾选框经 state/open 传入。
+  let autoHide = true
+  // 客户端正用 DSH 原生对话组件显示侧对话时，问答交给原生卡片，不再由本插件接管。
+  let nativeView = false
+  // 正在被客户端打开的侧对话：心跳续期，过期视为已离开，期间不重新归档。
+  const FOCUS_MS = 6000
   /** 每主会话的 openSignal（open() 时递增，state() 按主会话返回）：
    *  全局计数会让「换会话」误触发自动打开（新挂载的 ⤳ 按钮基线为 0）。 */
   const openSignals = new Map()
@@ -288,10 +295,12 @@ function createSideChatService(services, config) {
           selection: undefined,
           inheritMode,
           restored: true,
+          hidden: false,
         })
-        if (workspaceRegistry) {
+        if (workspaceRegistry && autoHide) {
           try {
             await workspaceRegistry.archiveSession(id)
+            sideChats.get(id).hidden = true
           } catch (err) {
             console.error('[side-chat] 恢复后归档失败', err)
           }
@@ -509,6 +518,8 @@ function createSideChatService(services, config) {
     if (typeof workspaceRegistry.unarchiveSession !== 'function') return true
     try {
       await workspaceRegistry.unarchiveSession(entry.sessionId)
+      entry.hidden = false
+      entry.unhiddenAt = Date.now()
       return true
     } catch (err) {
       // 不吞错：归档门会把这一步直接 reject，消息会被 claim 后丢弃，必须让调用方知道
@@ -516,11 +527,16 @@ function createSideChatService(services, config) {
       return false
     }
   }
+  function isFocused(entry) {
+    return Boolean(entry && entry.focusUntil && Date.now() < entry.focusUntil)
+  }
   async function hideSession(entry, attempt = 0) {
     if (!workspaceRegistry || !entry || typeof workspaceRegistry.archiveSession !== 'function') return
+    if (!autoHide || isFocused(entry)) return
     if (entry.hideTimer) return
     try {
       await workspaceRegistry.archiveSession(entry.sessionId)
+      entry.hidden = true
     } catch (err) {
       // 会话还在 running 时会抛 WorkspaceActiveSessionError：稍后重试，避免一直露出在会话列表里
       if (attempt < 5) {
@@ -548,6 +564,8 @@ function createSideChatService(services, config) {
     const agent = request && request.agent
     const entry = agent ? sideChats.get(agent.id) : undefined
     if (!entry) return next()
+    // 原生视图下问答由 DSH 自带卡片处理
+    if (nativeView) return next()
     const key = 'side-q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
     const questions = (Array.isArray(request.questions) ? request.questions : []).map((question) => ({
       id: String(question.id || ''),
@@ -748,7 +766,8 @@ function createSideChatService(services, config) {
   /** 创建一条侧对话：真实 agent 会话，继承主会话组合；模型默认继承主会话，也可指定。
    *  inherit = 'recent' | 'full'（或 true）时，把主对话的对话文字作为背景注入；
    *  工具调用不继承。 */
-  async function open(mainSessionId, firstMessage, selection, inherit) {
+  async function open(mainSessionId, firstMessage, selection, inherit, wantAutoHide) {
+    setAutoHide(wantAutoHide)
     const mainAgent = agents.get(mainSessionId)
     if (!mainAgent) return { ok: false, error: '主会话不在线' }
     let count = 0
@@ -832,6 +851,7 @@ function createSideChatService(services, config) {
       lastPreview: '',
       selection: initialSelection,
       inheritMode: inherited ? inherited.mode : null,
+      hidden: false,
     }
     sideChats.set(sideId, entry)
     // 继承来的上下文以 plugin 来源注入：agent 能看到，面板不会铺开（events() 过滤 plugin）
@@ -860,9 +880,11 @@ function createSideChatService(services, config) {
     openSignals.set(mainSessionId, (openSignals.get(mainSessionId) || 0) + 1)
     bumpVersion()
     // 创建即归档：从会话列表/搜索中隐藏（归档只是列表记账，不影响 agent 生命周期）
-    if (workspaceRegistry) {
+    if (workspaceRegistry && autoHide) {
       try {
         await workspaceRegistry.archiveSession(sideId)
+        const created = sideChats.get(sideId)
+        if (created) created.hidden = true
       } catch (err) {
         console.error('[side-chat] 归档失败（该会话将出现在会话列表中）', err)
       }
@@ -903,9 +925,58 @@ function createSideChatService(services, config) {
     return { ok: true }
   }
 
+  /** 切换自动隐藏：关 = 把已隐藏的全部取消归档；开 = 之后由 sweepHidden 逐条归档回去。 */
+  function setAutoHide(value) {
+    if (typeof value !== 'boolean' || value === autoHide) return
+    autoHide = value
+    if (autoHide) return
+    for (const entry of sideChats.values()) {
+      if (entry.hideTimer) {
+        clearTimeout(entry.hideTimer)
+        entry.hideTimer = undefined
+      }
+      if (entry.hidden !== false) unhideSession(entry)
+    }
+  }
+
+  /** 自动隐藏开着时，把空闲、没被打开、也不是刚取消归档的侧对话归档回去（兜底，防止漏藏）。 */
+  function sweepHidden(mainSessionId) {
+    if (!autoHide) return
+    const now = Date.now()
+    for (const entry of sideChats.values()) {
+      if (entry.mainSessionId !== mainSessionId) continue
+      if (entry.hidden !== false || entry.status === 'running' || isFocused(entry)) continue
+      if (entry.unhiddenAt && now - entry.unhiddenAt < 5000) continue
+      hideSession(entry)
+    }
+  }
+
+  /**
+   * 客户端正在原生视图里显示这条侧对话：取消归档（原生输入框直接发给会话，归档门会拦）并心跳续期；
+   * leave=true 表示离开，自动隐藏开着时归档回去。
+   */
+  async function focus(mainSessionId, sideId, native, leave) {
+    await restoreFor(mainSessionId)
+    const entry = entryOf(mainSessionId, sideId)
+    if (!entry) return { ok: false, error: '未知侧对话' }
+    if (typeof native === 'boolean') nativeView = native
+    if (leave) {
+      entry.focusUntil = 0
+      hideSession(entry)
+      return { ok: true }
+    }
+    entry.focusUntil = Date.now() + FOCUS_MS
+    if (entry.hidden !== false && !await unhideSession(entry)) {
+      return { ok: false, error: '暂时无法取消归档' }
+    }
+    return { ok: true }
+  }
+
   /** 面板轮询状态：侧对话列表 + 版本 + 自动开面板信号。 */
-  async function state(mainSessionId, exclude) {
+  async function state(mainSessionId, exclude, wantAutoHide) {
+    setAutoHide(wantAutoHide)
     await restoreFor(mainSessionId, exclude)
+    sweepHidden(mainSessionId)
     const chats = []
     for (const entry of sideChats.values()) {
       if (entry.mainSessionId !== mainSessionId) continue
@@ -1222,7 +1293,7 @@ function createSideChatService(services, config) {
     }
   }
 
-  return { open, send, state, events, bringBack, close, stop, answer, questionRequest, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
+  return { open, send, state, focus, events, bringBack, close, stop, answer, questionRequest, modelCatalog, modelInfo, selectModel, rename, usage, onAgentStatus, onAgentError, disposeAll }
 }
 
 return {
@@ -1267,7 +1338,7 @@ return {
       const firstMessage = args && typeof args.firstMessage === 'string' ? args.firstMessage : ''
       if (!mainSessionId) return { ok: false, error: '缺少主会话 ID' }
       // inherit 可以是 'recent' / 'full'（旧调用方传 true 视为 recent）
-      return sideChat.open(mainSessionId, firstMessage, args && args.selection, args && args.inherit)
+      return sideChat.open(mainSessionId, firstMessage, args && args.selection, args && args.inherit, args && args.autoHide)
     })
     // 可切换的模型目录（按 provider 分组；服务缺失时返回空列表）
     registerRpc('sidechat/models', () => sideChat.modelCatalog())
@@ -1297,7 +1368,14 @@ return {
       if (!mainSessionId) return { ok: false, error: '缺少主会话 ID' }
       // exclude：客户端记录的「已归档」侧会话 id，重启恢复时跳过
       const exclude = Array.isArray(args && args.exclude) ? args.exclude.slice(0, 400) : []
-      return sideChat.state(mainSessionId, exclude)
+      return sideChat.state(mainSessionId, exclude, args && args.autoHide)
+    })
+    // 原生视图打开/离开某条侧对话（取消归档 + 心跳）
+    registerRpc('sidechat/focus', (args) => {
+      const mainSessionId = strArg(args, 'mainSessionId')
+      const sideId = strArg(args, 'id')
+      if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
+      return sideChat.focus(mainSessionId, sideId, args && args.native, args && args.leave === true)
     })
     registerRpc('sidechat/events', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')

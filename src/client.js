@@ -63,6 +63,11 @@ const PANEL_CSS = `
 
 /* ---------- 列表页：卡片式条目 ---------- */
 .dsh-sc-listpage{flex:1;min-height:0;overflow-y:auto;padding:6px 8px 12px}
+.dsh-sc-autohide{display:flex;align-items:center;gap:6px;margin:10px 4px 0;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
+.dsh-sc-autohide input{margin:0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
+.dsh-sc-autohide-sub{margin:2px 4px 0 24px;font-size:11px;line-height:1.4;color:var(--dsw-alias-label-tertiary)}
+.dsh-sc-native{flex:1;min-height:0;display:flex;width:100%;min-width:0}
+.dsh-sc-native-loading{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);font-size:12px}
 .dsh-sc-list{max-height:34%;overflow-y:auto;border-bottom:1px solid var(--dsw-alias-border-l1);padding:6px;display:flex;flex-direction:column;gap:2px;flex:none;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--dsw-alias-label-tertiary) 35%,transparent) transparent}
 .dsh-sc-listpage .dsh-sc-list{max-height:none;overflow:visible;border-bottom:0;padding:0;gap:4px}
 .dsh-sc-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;cursor:pointer;border:1px solid transparent;transition:background .12s ease,border-color .12s ease}
@@ -190,6 +195,23 @@ const lastOpenSignals = new Map()
         return []
       }
     }
+    // 自动隐藏（localStorage，默认开）：开 = 侧对话归档藏起来；关 = 留在会话列表里，原生输入框直接可用
+    const readAutoHide = () => {
+      try {
+        return !(window.localStorage && window.localStorage.getItem('dsh-sidechat-autohide') === '0')
+      } catch (err) {
+        return true
+      }
+    }
+    const writeAutoHide = (value) => {
+      try {
+        if (window.localStorage) window.localStorage.setItem('dsh-sidechat-autohide', value ? '1' : '0')
+      } catch (err) {
+        // 存不下就算了
+      }
+    }
+    // 原生对话组件失败过一次就整段运行期退回自绘视图
+    let nativeBroken = false
     const rememberArchivedId = (id) => {
       try {
         if (!window.localStorage || typeof id !== 'string') return
@@ -368,6 +390,7 @@ return {
     // 动态路径有 cordis timer 服务；npm 静态路径没有，回退到 setInterval 实现
     const timer = ctx.get('timer') || createTimerFallback()
     const slots = ctx.get('slots')
+    const sessionsSvc = ctx.get('sessions')
     if (!slots) return
     styles.insert(PANEL_CSS)
 
@@ -420,6 +443,59 @@ return {
     }
 
     // ---- 会话标题栏右侧入口按钮 + openSignal 监听（/side 命令自动打开） ----
+    /**
+     * 原生对话视图：和 DSH 自带「子智能体对话」右栏 tab 同一套组件（SessionProvider + conversation.content），
+     * 消息、输入框、停止、模型、问答卡片都由 DSH 自己渲染。失败时调 onFail，由外层退回自绘视图。
+     */
+    function NativeChat(p) {
+      const { tabProps, mainSessionId, chatId, onFail } = p
+      const [ready, setReady] = React.useState(false)
+      const [reference, setReference] = React.useState(null)
+      // 打开 = 取消归档（原生输入框直接发给会话，归档门会拦）+ 每 2s 续期；离开 = 通知宿主归档回去
+      React.useEffect(() => {
+        let alive = true
+        const beat = async (first) => {
+          try {
+            const res = await host.call('sidechat/focus', { mainSessionId, id: chatId, native: true })
+            if (!alive) return
+            if (first) {
+              if (res && res.ok) setReady(true)
+              else onFail((res && res.error) || '无法打开这条侧对话')
+            }
+          } catch (err) {
+            if (alive && first) onFail('无法打开这条侧对话：' + String(err))
+          }
+        }
+        beat(true)
+        const timer = setInterval(() => beat(false), 2000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+          host.call('sidechat/focus', { mainSessionId, id: chatId, leave: true }).catch(() => {})
+        }
+      }, [mainSessionId, chatId])
+      React.useEffect(() => {
+        if (!ready) return undefined
+        let held
+        try {
+          held = sessionsSvc.retain(chatId, { source: 'sidebarChat' })
+          if (held && held.ready && typeof held.ready.catch === 'function') held.ready.catch(() => {})
+        } catch (err) {
+          onFail('原生对话视图不可用：' + String(err))
+          return undefined
+        }
+        setReference(held)
+        return () => {
+          setReference(null)
+          try { held.release() } catch (err) { /* ignore */ }
+        }
+      }, [ready, chatId])
+      if (!reference) return React.createElement('div', { className: 'dsh-sc-native-loading' }, '正在打开…')
+      return React.createElement('div', { className: 'dsh-sc-native' },
+        React.createElement(tabProps.SessionProvider, { session: reference },
+          tabProps.renderSlot('sidebar.chat.conversation', {})))
+    }
+
     function SideToggle(props) {
       const { isOpen, isMinimized } = usePanelState()
       const sessionId = props.sessionId || useCurrentSessionId(props)
@@ -503,6 +579,8 @@ return {
       const [answerDraft, setAnswerDraft] = React.useState({})
       // 列表页 / 对话页：默认列表，点某条进入对话（返回即列表）
       const [view, setView] = React.useState('list')
+      const [autoHide, setAutoHide] = React.useState(readAutoHide)
+      const [nativeFailed, setNativeFailed] = React.useState(nativeBroken)
       // 刚新建、state 还没轮询到的对话 id（避免被「选中项不存在」的保护逻辑弹回列表）
       const [pendingChatId, setPendingChatId] = React.useState(null)
       // 改名：列表项上点 ✎ 进入内联编辑，回车/失焦提交，Esc 取消
@@ -532,7 +610,7 @@ return {
       const refreshState = React.useCallback(async () => {
         if (!sessionId) return
         try {
-          const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds() })
+          const res = await host.call('sidechat/state', { mainSessionId: sessionId, exclude: readArchivedIds(), autoHide })
           if (!res || !Array.isArray(res.chats)) return
           // 内容级比较：无变化时不触发重渲染
           setChats((prev) => {
@@ -552,7 +630,7 @@ return {
         } catch (err) {
           console.error('[side-chat] state 失败', err)
         }
-      }, [sessionId])
+      }, [sessionId, autoHide])
 
       const refreshEvents = React.useCallback(async () => {
         if (!sessionId || !selectedId) return
@@ -762,6 +840,7 @@ return {
             mainSessionId: sessionId,
             selection: chosen,
             inherit: nextInherit === 'none' ? undefined : nextInherit,
+            autoHide,
           })
           if (res && res.ok) {
             setPendingChatId(res.id)
@@ -970,6 +1049,10 @@ return {
             ? selected.title
             : selected.title && typeof selected.title.title === 'string' ? selected.title.title : '侧对话')
         : '侧边对话'
+      // 右栏里且原生组件可用 → 对话页用 DSH 原生对话视图；否则沿用自绘视图
+      const nativeOk = inline && !nativeFailed && Boolean(sessionsSvc)
+        && typeof props.SessionProvider === 'function' && typeof props.renderSlot === 'function'
+      const useNative = nativeOk && view === 'chat' && Boolean(selectedId)
       const head = React.createElement('div', { className: 'dsh-sc-head' },
         view === 'chat'
           ? React.createElement('button', {
@@ -992,8 +1075,8 @@ return {
             : React.createElement('span', { className: 'dsh-sc-head-sub' }, '并行会话 · 独立上下文'),
         ),
         view === 'chat' ? null : inheritPicker,
-        picker,
-        effortPicker,
+        useNative ? null : picker,
+        useNative ? null : effortPicker,
         view === 'chat'
           ? null
           : React.createElement('button', { className: 'dsh-sc-btn primary', onClick: createChat }, '＋ 新建'),
@@ -1276,6 +1359,38 @@ return {
           )
         : null
 
+      const toggleAutoHide = (value) => {
+        setAutoHide(value)
+        writeAutoHide(value)
+      }
+      const autoHideRow = React.createElement(React.Fragment, null,
+        React.createElement('label', { className: 'dsh-sc-autohide' },
+          React.createElement('input', {
+            type: 'checkbox',
+            checked: autoHide,
+            onChange: (e) => toggleAutoHide(e.target.checked),
+          }),
+          '自动隐藏侧对话'),
+        React.createElement('div', { className: 'dsh-sc-autohide-sub' },
+          autoHide
+            ? '侧对话不会出现在 DSH 的会话列表里'
+            : '侧对话会像普通会话一样出现在会话列表里'))
+
+      const nativeBody = useNative
+        ? React.createElement(NativeChat, {
+            key: selectedId,
+            tabProps: props,
+            mainSessionId: sessionId,
+            chatId: selectedId,
+            onFail: (msg) => {
+              nativeBroken = true
+              setNativeFailed(true)
+              host.call('sidechat/focus', { mainSessionId: sessionId, id: selectedId, native: false }).catch(() => {})
+              setNotice(msg)
+            },
+          })
+        : null
+
       const noticeBar = notice
         ? React.createElement('div', { className: isErrorText(notice) ? 'dsh-sc-error' : 'dsh-sc-notice' }, notice)
         : null
@@ -1287,11 +1402,11 @@ return {
       if (inline) {
         return React.createElement('div', { className: 'dsh-sc-tabbody' },
           head,
-          view === 'chat' ? null : React.createElement('div', { className: 'dsh-sc-listpage' }, list),
+          view === 'chat' ? null : React.createElement('div', { className: 'dsh-sc-listpage' }, list, autoHideRow),
           noticeBar,
           selectedError,
-          view === 'chat' ? body : null,
-          view === 'chat' ? foot : null,
+          useNative ? nativeBody : view === 'chat' ? body : null,
+          useNative ? null : view === 'chat' ? foot : null,
         )
       }
 
@@ -1305,7 +1420,7 @@ return {
       },
         resizer,
         head,
-        view === 'chat' ? null : React.createElement('div', { className: 'dsh-sc-listpage' }, list),
+        view === 'chat' ? null : React.createElement('div', { className: 'dsh-sc-listpage' }, list, autoHideRow),
         noticeBar,
         selectedError,
         view === 'chat' ? body : null,
@@ -1365,10 +1480,20 @@ return {
             icon: SideChatGlyph,
           }],
         }), 'side-chat: sidebar tab type')
-        slots.inject('sidebar.right.pane.tab', () => slots.register(
-          { name: 'sidebar.right.pane.tab', key: SIDEBAR_TAB_KIND },
-          SideChatTabBody,
-        ))
+        // 带上 sidebar.chat.conversation 子席位（DSH 子智能体插件声明），拿到 renderSlot 才能嵌原生对话；
+        // 子席位不存在时退回不带子席位的注册，面板照旧用自绘视图。
+        slots.inject('sidebar.right.pane.tab', () => {
+          try {
+            return slots.register({
+              name: 'sidebar.right.pane.tab',
+              key: SIDEBAR_TAB_KIND,
+              children: { 'sidebar.chat.conversation': { kind: 'single', scope: 'session' } },
+            }, SideChatTabBody)
+          } catch (err) {
+            console.error('[side-chat] 原生对话子席位不可用，使用自绘视图', err)
+            return slots.register({ name: 'sidebar.right.pane.tab', key: SIDEBAR_TAB_KIND }, SideChatTabBody)
+          }
+        })
       })
     }
   },
