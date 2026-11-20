@@ -31,8 +31,8 @@ function createSideChatService(services, config) {
   // 由客户端勾选框经 state/open 传入。
   let autoHide = true
   // 客户端正用 DSH 原生对话组件显示侧对话时，问答交给原生卡片，不再由本插件接管。
-  // 默认 true：右栏就是原生视图；只有原生组件整体不可用（客户端 onFail）才置 false，让本插件的自绘视图接管问答。
-  let nativeView = true
+  // 问答归属按「条」记在 entry.native 上：默认 true（右栏就是原生视图，问答交给 DSH 自带卡片）；
+  // 客户端显示这条的自绘视图/浮层时发 native:false，由本插件接管问答。
   // 正在被客户端打开的侧对话：心跳续期，过期视为已离开，期间不重新归档。
   const FOCUS_MS = 6000
   /** 每主会话的 openSignal（open() 时递增，state() 按主会话返回）：
@@ -575,8 +575,8 @@ function createSideChatService(services, config) {
     const agent = request && request.agent
     const entry = agent ? sideChats.get(agent.id) : undefined
     if (!entry) return next()
-    // 原生视图下问答由 DSH 自带卡片处理
-    if (nativeView) return next()
+    // 这条侧对话正在原生视图里显示：问答由 DSH 自带卡片处理
+    if (entry.native !== false) return next()
     const key = 'side-q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
     const questions = (Array.isArray(request.questions) ? request.questions : []).map((question) => ({
       id: String(question.id || ''),
@@ -966,11 +966,13 @@ function createSideChatService(services, config) {
    * 客户端正在原生视图里显示这条侧对话：取消归档（原生输入框直接发给会话，归档门会拦）并心跳续期；
    * leave=true 表示离开，自动隐藏开着时归档回去。
    */
-  async function focus(mainSessionId, sideId, native, leave) {
+  async function focus(mainSessionId, sideId, native, leave, flagOnly) {
     await restoreFor(mainSessionId)
     const entry = entryOf(mainSessionId, sideId)
     if (!entry) return { ok: false, error: '未知侧对话' }
-    if (typeof native === 'boolean') nativeView = native
+    if (typeof native === 'boolean') entry.native = native
+    // 只改问答归属标记（自绘视图用）：不取消归档、不续期
+    if (flagOnly) return { ok: true }
     if (leave) {
       entry.focusUntil = 0
       hideSession(entry)
@@ -1387,7 +1389,7 @@ return {
       const mainSessionId = strArg(args, 'mainSessionId')
       const sideId = strArg(args, 'id')
       if (!mainSessionId || !sideId) return { ok: false, error: '参数缺失' }
-      return sideChat.focus(mainSessionId, sideId, args && args.native, args && args.leave === true)
+      return sideChat.focus(mainSessionId, sideId, args && args.native, args && args.leave === true, args && args.flagOnly === true)
     })
     registerRpc('sidechat/events', (args) => {
       const mainSessionId = strArg(args, 'mainSessionId')

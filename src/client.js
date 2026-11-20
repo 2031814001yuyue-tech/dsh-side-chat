@@ -490,7 +490,10 @@ return {
         let held
         try {
           held = getSessions().retain(chatId, { source: 'sidebarChat' })
-          if (held && held.ready && typeof held.ready.catch === 'function') held.ready.catch(() => {})
+          // 会话打开失败（历史文件问题/迁移中）：原生视图会是一列空对话，没有任何提示 → 这条退回自绘视图
+          if (held && held.ready && typeof held.ready.catch === 'function') {
+            held.ready.catch((err) => { onFail('这条侧对话打不开：' + String((err && err.message) || err), false) })
+          }
         } catch (err) {
           onFail('原生对话视图不可用：' + String(err), true)
           return undefined
@@ -794,6 +797,14 @@ return {
           .catch(() => { if (alive) setUsage(null) })
         return () => { alive = false }
       }, [sessionId, selectedId, lastMessageTime])
+
+      // 显示这条对话的是自绘视图/浮层（原生组件不可用或这条失败过）→ 告诉宿主问答由本插件接管（只改标记，不动归档）
+      const canNativeHere = inline && !nativeFailed && !failedChats[selectedId]
+        && Boolean(getSessions()) && Boolean(props.SessionProvider) && typeof props.renderFactorySlot === 'function'
+      React.useEffect(() => {
+        if (view !== 'chat' || !selectedId || !sessionId || canNativeHere) return
+        host.call('sidechat/focus', { mainSessionId: sessionId, id: selectedId, native: false, flagOnly: true }).catch(() => {})
+      }, [view, selectedId, sessionId, canNativeHere])
 
       // Markdown 渲染（仅在消息变化时解析；B5 修复：key 用消息索引）
       const renderedMessages = React.useMemo(
