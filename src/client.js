@@ -444,6 +444,9 @@ return {
     }
 
     // ---- 会话标题栏右侧入口按钮 + openSignal 监听（/side 命令自动打开） ----
+    /** 固定显示 chat 视图；必须是稳定引用（见 NativeChat 注释）。 */
+    const FixedChatView = (vp) => vp.renderSlot('conversation.session', { view: 'chat' })
+
     /**
      * 原生对话视图：和 DSH 自带「子智能体对话」右栏 tab 同一套组件（SessionProvider + conversation.content），
      * 消息、输入框、停止、模型、问答卡片都由 DSH 自己渲染。失败时调 onFail，由外层退回自绘视图。
@@ -491,16 +494,20 @@ return {
           try { held.release() } catch (err) { /* ignore */ }
         }
       }, [ready, chatId])
+      // 内容只在会话引用变化时重建：每次渲染都新建 views 组件会让整个原生对话反复卸载重挂（闪烁）
+      const renderFactorySlot = tabProps.renderFactorySlot
+      const content = React.useMemo(() => {
+        if (!reference) return null
+        try {
+          // 直接渲染 DSH 的 conversation.content（与子智能体右栏聊天同款）；固定显示 chat 视图
+          return renderFactorySlot('conversation.content', { variant: 'embedded', phase: 'active', hero: false }, {
+            slots: { views: FixedChatView },
+          })
+        } catch (err) {
+          return React.createElement('div', { className: 'dsh-sc-error' }, '原生对话视图出错：' + String((err && err.message) || err))
+        }
+      }, [reference, renderFactorySlot])
       if (!reference) return React.createElement('div', { className: 'dsh-sc-native-loading' }, '正在打开…')
-      let content
-      try {
-        // 直接渲染 DSH 的 conversation.content（与子智能体右栏聊天同款）；固定显示 chat 视图
-        content = tabProps.renderFactorySlot('conversation.content', { variant: 'embedded', phase: 'active', hero: false }, {
-          slots: { views: (vp) => vp.renderSlot('conversation.session', { view: 'chat' }) },
-        })
-      } catch (err) {
-        content = React.createElement('div', { className: 'dsh-sc-error' }, '原生对话视图出错：' + String((err && err.message) || err))
-      }
       return React.createElement('div', { className: 'dsh-sc-native' },
         React.createElement(tabProps.SessionProvider, { session: reference }, content))
     }
@@ -641,8 +648,11 @@ return {
         }
       }, [sessionId, autoHide])
 
+      const nativeActiveRef = React.useRef(false)
       const refreshEvents = React.useCallback(async () => {
         if (!sessionId || !selectedId) return
+        // 原生视图自己订阅会话，不需要再轮询 events（轮询会让面板每秒重渲染）
+        if (nativeActiveRef.current) return
         try {
           const res = await host.call('sidechat/events', { mainSessionId: sessionId, id: selectedId })
           if (res && res.ok && Array.isArray(res.messages)) setMessages(res.messages)
@@ -1063,6 +1073,7 @@ return {
         : !props.SessionProvider ? 'SessionProvider' : typeof props.renderFactorySlot !== 'function' ? 'renderFactorySlot' : ''
       const nativeOk = inline && !nativeFailed && !nativeMissing
       const useNative = nativeOk && view === 'chat' && Boolean(selectedId)
+      nativeActiveRef.current = useNative
       const head = React.createElement('div', { className: 'dsh-sc-head' },
         view === 'chat'
           ? React.createElement('button', {
